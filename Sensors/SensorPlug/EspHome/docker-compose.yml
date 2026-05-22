@@ -1,0 +1,17 @@
+services:
+      esphome:
+        container_name: esphome
+        image: ghcr.io/esphome/esphome:stable
+        volumes:
+          - ./config:/config
+          - esphome_build:/config/.esphome
+          - pio_cache:/root/.platformio
+        environment:
+          - TZ=America/Argentina/Buenos_Aires
+        restart: unless-stopped
+        ports:
+          - "6052:6052"
+
+volumes:
+  esphome_build:
+  pio_cache:
