@@ -1,0 +1,76 @@
+services:
+ 
+  mosquitto:
+    image: eclipse-mosquitto:latest
+    container_name: mosquitto
+    restart: unless-stopped
+    ports:
+      - "1883:1883"      
+    volumes:
+      - ./mosquitto/config:/mosquitto/config
+      - ./mosquitto/data:/mosquitto/data
+      - ./mosquitto/log:/mosquitto/log
+    networks:
+      - iot_network
+
+  influxdb:
+    image: influxdb:2.7
+    container_name: influxdb
+    restart: unless-stopped
+    ports:
+      - "8086:8086"
+    volumes:
+      - ./influxdb/data:/var/lib/influxdb2
+      - ./influxdb/config:/etc/influxdb2
+    environment:
+      - DOCKER_INFLUXDB_INIT_MODE=setup
+      - DOCKER_INFLUXDB_INIT_USERNAME=admin
+      - DOCKER_INFLUXDB_INIT_PASSWORD=admin123
+      - DOCKER_INFLUXDB_INIT_ORG=ceia
+      - DOCKER_INFLUXDB_INIT_BUCKET=energy_meters
+      - DOCKER_INFLUXDB_INIT_RETENTION=0 
+    networks:
+      - iot_network
+
+  energy-meter:
+    image: energymeterworkerservice:latest
+    container_name: energy-meter
+    restart: unless-stopped
+    environment:
+      - DOTNET_ENVIRONMENT=Production
+    depends_on:
+      - mosquitto  
+      - influxdb   
+    networks:
+      - iot_network
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./grafana/data:/var/lib/grafana
+    user: "472" 
+    networks:
+      - iot_network
+
+  #homeassistant:
+  #  container_name: homeassistant
+  # image: "ghcr.io/home-assistant/home-assistant:stable"
+  #  volumes:
+  #    - ./homeassistant/config:/config
+  #    - /etc/localtime:/etc/localtime:ro
+  #    - /run/dbus:/run/dbus:ro
+  #  environment:
+  #    - TZ=America/Argentina/Buenos_Aires
+  #  restart: unless-stopped
+  #  privileged: true
+  #  network_mode: host
+  #  depends_on:
+  #    - mosquitto
+
+networks:
+  iot_network:
+    driver: bridge

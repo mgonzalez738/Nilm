@@ -1,0 +1,5 @@
+docker buildx build --platform linux/arm64 -f EnergyMeterWorkerService/Dockerfile -t energymeterworkerservice:latest --load .
+
+docker save -o energymeterworkerservice_arm64.tar energymeterworkerservice:latest
+
+sudo docker load -i energymeterworkerservice_arm64.tar
