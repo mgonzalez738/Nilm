@@ -1,8 +1,27 @@
 substitutions:
+  
+  # Device main parameters - Update these for each device, and ensure they are unique across devices. 
+  # These are used for both network configuration and to set the default name and friendly name of the device as it appears in Home Assistant. The device_id is used in the MQTT topic to allow multiple devices to be used with a single MQTT broker, and also forms part of the default name and friendly name of the device.
+  
+  device_id: "001"
+  device_ip: "192.168.80.61"
+  device_gateway: "192.168.80.1"
+  device_subnet: "255.255.255.0"
+  device_dns1: "8.8.8.8"
+
+  wifi_ssid: "GYM2"
+  wifi_password: "xxxxxxxx"
+
+  # Change to "auto" to use DHCP, or set a static IP address as per ${device_ip} above
+  use_address: "192.168.80.61"
+
+  mqtt_broker: "192.168.80.50"
+  mqtt_port: 1883
+  
   # Default name
-  name: "smart-plug-001"
+  name: "smart-plug-${device_id}"
   # Default friendly name   
-  friendly_name: "Smart Plug 001"
+  friendly_name: "Smart Plug ${device_id}"
   # Allows ESP device to be automatically linked to an 'Area' in Home Assistant. Typically used for areas such as 'Lounge Room', 'Kitchen' etc  
   room: ""
   # Description as appears in ESPHome & top of webserver page
@@ -126,19 +145,18 @@ mdns:
 web_server:
   port: 80
 #  version: 3
-
 network:
   enable_ipv6: ${ipv6_enable}
 
 wifi:
-  ssid: "GYM2"
-  password: "alfonberna"
-  use_address: "192.168.80.61"
+  ssid: "${wifi_ssid}"
+  password: "${wifi_password}"
+  use_address: "${use_address}"
   manual_ip:
-    static_ip: 192.168.80.61
-    gateway: 192.168.80.1  
-    subnet: 255.255.255.0
-    dns1: 8.8.8.8
+    static_ip: ${device_ip}
+    gateway: ${device_gateway}
+    subnet: ${device_subnet}
+    dns1: ${device_dns1}
 
   # This spawns an AP with the device name and mac address with no password.
   ap: {}
@@ -435,25 +453,27 @@ time:
               if (!id(sntp_time).now().is_valid()) {
                 return;
               }
-              
-              auto time = id(sntp_time).now();
-              std::string timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ");
 
-              float v = id(voltage_sensor).has_state() ? id(voltage_sensor).state : 0.0;
-              float c = id(current_sensor).has_state() ? id(current_sensor).state : 0.0;
-              float p = id(power_sensor).has_state() ? id(power_sensor).state : 0.0;
+              if (id(mqtt_client).is_connected()) {
+                auto time = id(sntp_time).now();
+                std::string timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ");
 
-              int status = (p > 0.0) ? 1 : 0;
+                float v = id(voltage_sensor).has_state() ? id(voltage_sensor).state : 0.0;
+                float c = id(current_sensor).has_state() ? id(current_sensor).state : 0.0;
+                float p = id(power_sensor).has_state() ? id(power_sensor).state : 0.0;
 
-              char json_buffer[250];
-              sprintf(json_buffer, "{\"timestamp\":\"%s\",\"voltage\":%.1f,\"current\":%.3f,\"power\":%.1f,\"status\":%d}", 
-                      timestamp.c_str(), v, c, p, status);
+                int status = (p > 0.0) ? 1 : 0;
 
-              id(mqtt_client).publish("smart-plug/001/data", json_buffer);
+                char json_buffer[250];
+                sprintf(json_buffer, "{\"timestamp\":\"%s\",\"voltage\":%.1f,\"current\":%.3f,\"power\":%.1f,\"status\":%d}", 
+                        timestamp.c_str(), v, c, p, status);
+
+                id(mqtt_client).publish("smart-plug/${device_id}/data", json_buffer);
+              }
 
 mqtt:
   id: mqtt_client
-  broker: "192.168.80.50"
-  port: 1883
-  topic_prefix: "smart-plug/001"
+  broker: "${mqtt_broker}"
+  port: ${mqtt_port}
+  topic_prefix: "smart-plug/${device_id}"
   discovery: false
