@@ -62,7 +62,7 @@ esphome:
             index: !lambda |-
                     return id(restore_mode)-1;
         - lambda: |-
-              switch(id(restore_mode))
+              switch(id(restore_mode)) 
               {
               case 1:{
                       id(relay).turn_off();
@@ -428,30 +428,28 @@ time:
               - text_sensor.template.publish:
                   id: device_last_restart
                   state: !lambda 'return id(sntp_time).now().strftime("%a %d %b %Y - %I:%M:%S %p");'
+    on_time:
+      - seconds: /1  
+        then:
+          - lambda: |-
+              if (!id(sntp_time).now().is_valid()) {
+                return;
+              }
+              
+              auto time = id(sntp_time).now();
+              std::string timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ");
 
-interval:
-  - interval: 1s
-    then:
-      - lambda: |-
-          if (!id(sntp_time).now().is_valid()) {
-            return;
-          }
-          
-          auto time = id(sntp_time).now();
-          std::string timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ");
+              float v = id(voltage_sensor).has_state() ? id(voltage_sensor).state : 0.0;
+              float c = id(current_sensor).has_state() ? id(current_sensor).state : 0.0;
+              float p = id(power_sensor).has_state() ? id(power_sensor).state : 0.0;
 
-          float v = id(voltage_sensor).has_state() ? id(voltage_sensor).state : 0.0;
-          float c = id(current_sensor).has_state() ? id(current_sensor).state : 0.0;
-          float p = id(power_sensor).has_state() ? id(power_sensor).state : 0.0;
+              int status = (p > 0.0) ? 1 : 0;
 
-          int status = (p > 0.0) ? 1 : 0;
+              char json_buffer[250];
+              sprintf(json_buffer, "{\"timestamp\":\"%s\",\"voltage\":%.1f,\"current\":%.3f,\"power\":%.1f,\"status\":%d}", 
+                      timestamp.c_str(), v, c, p, status);
 
-          char json_buffer[250];
-          // Usamos %d en el formato del sprintf para inyectar el número entero
-          sprintf(json_buffer, "{\"timestamp\":\"%s\",\"voltage\":%.1f,\"current\":%.3f,\"power\":%.1f,\"status\":%d}", 
-                  timestamp.c_str(), v, c, p, status);
-
-          id(mqtt_client).publish("smart-plug/001/data", json_buffer);  
+              id(mqtt_client).publish("smart-plug/001/data", json_buffer);
 
 mqtt:
   id: mqtt_client

@@ -58,7 +58,15 @@ namespace EnergyMeterWorkerService
 
             var factory = new MqttClientFactory();
             _mqttPublisherClient = factory.CreateMqttClient();
-            _influxClient = new InfluxDBClient(influxUrl, influxToken);
+
+            var influxOptions = new InfluxDBClientOptions(influxUrl)
+            {
+                Token = influxToken,
+                Bucket = _influxBucket,
+                Org = _influxOrg,
+                Timeout = TimeSpan.FromMinutes(2) // Aumentar a 2 minutos para consultas pesadas
+            };
+            _influxClient = new InfluxDBClient(influxOptions);
 
             LoadStateFromDisk();
         }
@@ -129,13 +137,35 @@ namespace EnergyMeterWorkerService
             bool stateChanged = false;
             try
             {
-                // Limita la búsqueda temporal para optimizar la consulta a la base de datos
-                DateTime queryStart = DateTime.UtcNow.AddMinutes(-(_publishIntervalMinutes * 2));
+                DateTime now = DateTime.UtcNow;
+
+                // Límite Superior: Minuto actual truncado a 0 segundos. 
+                // En Flux el parámetro 'stop' es exclusivo, por lo que llegará hasta el segundo :59 del minuto anterior.
+                DateTime queryStop = new DateTime(now.Year, now.Month, now.Day, now.Hour, now.Minute, 0, DateTimeKind.Utc);
+
+                DateTime maxLookback = now.AddMinutes(-60);
+
+                // Límite Inferior: El timestamp más antiguo no enviado de todos los medidores.
+                var meterTimestamps = _lastSentTimestamps
+                    .Where(kvp => kvp.Key.StartsWith("meter_"))
+                    .Select(kvp => kvp.Value)
+                    .ToList();
+
+                DateTime queryStart = meterTimestamps.Any() ? meterTimestamps.Min() : now.AddDays(-1);
+
+                if (queryStart < maxLookback)
+                {
+                    queryStart = maxLookback;
+                    _logger.LogWarning("El timestamp guardado era demasiado antiguo. Recortando inicio de consulta a {Time} para evitar Timeout en Influx.", queryStart);
+                }
+
+                // Medida de seguridad opcional para no asfixiar a InfluxDB si un medidor estuvo apagado meses
+                if (queryStart < now.AddDays(-7)) queryStart = now.AddDays(-7);
 
                 string fluxQuery = $@"
                     import ""influxdata/influxdb/schema""
                     from(bucket: ""{_influxBucket}"")
-                    |> range(start: {queryStart:yyyy-MM-ddTHH:mm:ss.fffZ})
+                    |> range(start: {queryStart:yyyy-MM-ddTHH:mm:ss.fffZ}, stop: {queryStop:yyyy-MM-ddTHH:mm:ss.fffZ})
                     |> filter(fn: (r) => r[""_measurement""] == ""energy-meters"")
                     |> schema.fieldsAsCols()";
 
@@ -156,7 +186,7 @@ namespace EnergyMeterWorkerService
                         string stateKey = $"meter_{meterId}";
                         _lastSentTimestamps.TryGetValue(stateKey, out DateTime lastSentForMeter);
 
-                        // Omite registros que ya fueron enviados previamente
+                        // Omite estrictamente registros que ya fueron enviados previamente para este medidor en particular
                         if (recordTime.Value <= lastSentForMeter.ToUniversalTime()) continue;
 
                         if (!groupedData.ContainsKey(meterId))
@@ -164,7 +194,6 @@ namespace EnergyMeterWorkerService
 
                         var dataPoint = new Dictionary<string, object> { ["timestamp"] = recordTime.Value.ToString("O") };
 
-                        // Diccionarios temporales para reconstruir las listas de armónicos ordenadas
                         var tempDftV = new SortedDictionary<int, double>();
                         var tempDftI = new SortedDictionary<int, double>();
 
@@ -217,7 +246,8 @@ namespace EnergyMeterWorkerService
                     _lastSentTimestamps[$"meter_{deviceId}"] = newestRecordTime;
                     stateChanged = true;
 
-                    _logger.LogInformation("[Meter] Lote de {Count} registros publicados para {deviceId}.", sortedRecords.Count, deviceId);
+                    _logger.LogInformation("[Meter] Lote de {Count} registros publicados para {deviceId} (Último timestamp: {Time}).",
+                        sortedRecords.Count, deviceId, newestRecordTime);
                 }
             }
             catch (Exception ex)
@@ -236,12 +266,34 @@ namespace EnergyMeterWorkerService
             bool stateChanged = false;
             try
             {
-                DateTime queryStart = DateTime.UtcNow.AddMinutes(-(_publishIntervalMinutes * 2));
+                DateTime now = DateTime.UtcNow;
+
+                // Límite Superior: Minuto actual truncado a 0 segundos (exclusivo en InfluxDB)
+                DateTime queryStop = new DateTime(now.Year, now.Month, now.Day, now.Hour, now.Minute, 0, DateTimeKind.Utc);
+
+                DateTime maxLookback = now.AddMinutes(-60);
+
+                // Límite Inferior: El timestamp más antiguo no enviado de los enchufes
+                var plugTimestamps = _lastSentTimestamps
+                    .Where(kvp => kvp.Key.StartsWith("plug_"))
+                    .Select(kvp => kvp.Value)
+                    .ToList();
+
+                DateTime queryStart = plugTimestamps.Any() ? plugTimestamps.Min() : now.AddDays(-1);
+
+                if (queryStart < maxLookback)
+                {
+                    queryStart = maxLookback;
+                    _logger.LogWarning("El timestamp guardado era demasiado antiguo. Recortando inicio de consulta a {Time} para evitar Timeout en Influx.", queryStart);
+                }
+
+                // Medida de seguridad para no asfixiar InfluxDB
+                if (queryStart < now.AddDays(-7)) queryStart = now.AddDays(-7);
 
                 string fluxQuery = $@"
                     import ""influxdata/influxdb/schema""
                     from(bucket: ""{_influxBucket}"")
-                    |> range(start: {queryStart:yyyy-MM-ddTHH:mm:ss.fffZ})
+                    |> range(start: {queryStart:yyyy-MM-ddTHH:mm:ss.fffZ}, stop: {queryStop:yyyy-MM-ddTHH:mm:ss.fffZ})
                     |> filter(fn: (r) => r[""_measurement""] == ""smart-plugs"")
                     |> schema.fieldsAsCols()";
 
@@ -262,6 +314,7 @@ namespace EnergyMeterWorkerService
                         string stateKey = $"plug_{plugId}";
                         _lastSentTimestamps.TryGetValue(stateKey, out DateTime lastSentForPlug);
 
+                        // Omite registros que ya fueron enviados previamente
                         if (recordTime.Value <= lastSentForPlug.ToUniversalTime()) continue;
 
                         if (!groupedData.ContainsKey(plugId))
@@ -304,7 +357,8 @@ namespace EnergyMeterWorkerService
                     _lastSentTimestamps[$"plug_{deviceId}"] = newestRecordTime;
                     stateChanged = true;
 
-                    _logger.LogInformation("[Plug] Lote de {Count} registros publicados para {deviceId}.", sortedRecords.Count, deviceId);
+                    _logger.LogInformation("[Plug] Lote de {Count} registros publicados para {deviceId} (Último timestamp: {Time}).",
+                        sortedRecords.Count, deviceId, newestRecordTime);
                 }
             }
             catch (Exception ex)
@@ -324,7 +378,8 @@ namespace EnergyMeterWorkerService
             int minutesToNext = intervalMinutes - (now.Minute % intervalMinutes);
 
             DateTime nextBoundary = new DateTime(now.Year, now.Month, now.Day, now.Hour, now.Minute, 0, DateTimeKind.Utc)
-                .AddMinutes(minutesToNext);
+                .AddMinutes(minutesToNext)
+                .AddSeconds(5);
 
             return nextBoundary - now;
         }
