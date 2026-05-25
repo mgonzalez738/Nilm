@@ -46,7 +46,7 @@ const unsigned short CAL_PGA_GAIN      = 0x5555; /* Configura el amplificador in
 const unsigned short CAL_VOLT_GAIN_1   = 32031;  /* Factor multiplicador calibrado para el transformador de voltaje de ocho voltios */
 const unsigned short CAL_VOLT_OFFSET_1 = 64608;  /* Compensación matemática para corregir el error de cero en el canal de tensión */
 
-const unsigned short CAL_CURR_GAIN_1   = 33500;  /* Factor multiplicador calibrado para el transformador de corriente de cien amperios */
+const unsigned short CAL_CURR_GAIN_1   = 31905;   //33500;  /* Factor multiplicador calibrado para el transformador de corriente de cien amperios */
 const unsigned short CAL_CURR_OFFSET_1 = 64072;  /* Compensación matemática para corregir el error de cero en el canal de corriente */
 
 /* 
