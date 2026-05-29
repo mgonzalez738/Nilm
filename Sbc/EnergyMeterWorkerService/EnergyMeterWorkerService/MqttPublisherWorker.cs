@@ -3,446 +3,401 @@ using MQTTnet;
 using System.Text.Json;
 using System.Collections.Concurrent;
 
-namespace EnergyMeterWorkerService
+namespace EnergyMeterWorkerService;
+
+/// <summary>
+/// Representa un servicio en segundo plano encargado de consultar periódicamente métricas desde InfluxDB 
+/// y publicarlas agrupadas por lotes hacia un broker MQTT de destino.
+/// </summary>
+public class MqttPublisherWorker : BackgroundService
 {
-    /// <summary>
-    /// Representa un servicio en segundo plano encargado de consultar periódicamente métricas desde InfluxDB 
-    /// y publicarlas agrupadas por lotes hacia un broker MQTT de destino.
-    /// Gestiona la publicación tanto para medidores de energía como para enchufes inteligentes, 
-    /// manteniendo el estado temporal de los envíos para evitar datos duplicados.
-    /// </summary>
-    public class MqttPublisherWorker : BackgroundService
+    private readonly ILogger<MqttPublisherWorker> _logger;
+    private readonly IConfiguration _configuration;
+    private readonly InfluxDBClient _influxClient;
+    private readonly IMqttClient _mqttPublisherClient;
+
+    private readonly string _pubHost;
+    private readonly int _pubPort;
+    private readonly string _pubMeterBaseTopic;
+    private readonly string _pubPlugBaseTopic;
+    private readonly int _publishIntervalMinutes;
+    private readonly string _influxBucket;
+    private readonly string _influxOrg;
+
+    private readonly string _stateFilePath = Path.Combine(AppContext.BaseDirectory, "publisher_state.json");
+    private ConcurrentDictionary<string, DateTime> _lastSentTimestamps = new();
+
+    private readonly JsonSerializerOptions _jsonOptions = new() { WriteIndented = true };
+
+    public MqttPublisherWorker(ILogger<MqttPublisherWorker> logger, IConfiguration configuration)
     {
-        private readonly ILogger<MqttPublisherWorker> _logger;
-        private readonly IConfiguration _configuration;
-        private readonly InfluxDBClient _influxClient;
-        private readonly IMqttClient _mqttPublisherClient;
+        _logger = logger;
+        _configuration = configuration;
 
-        // Variables de configuración de red y base de datos
-        private readonly string _pubHost;
-        private readonly int _pubPort;
-        private readonly string _pubMeterBaseTopic;
-        private readonly string _pubPlugBaseTopic;
-        private readonly int _publishIntervalMinutes;
-        private readonly string _influxBucket;
-        private readonly string _influxOrg;
+        _pubMeterBaseTopic = _configuration["MqttSettings:MeterTopic"] ?? "energy-meter";
+        _pubPlugBaseTopic = _configuration["MqttSettings:PlugTopic"] ?? "smart-plug";
 
-        // Gestión de estado en disco y caché en memoria para rastrear el último registro enviado
-        private readonly string _stateFilePath = Path.Combine(AppContext.BaseDirectory, "publisher_state.json");
-        private ConcurrentDictionary<string, DateTime> _lastSentTimestamps = new();
+        _pubHost = _configuration["MqttSettings:PublisherBroker:Host"] ?? "localhost";
+        _pubPort = _configuration.GetValue<int>("MqttSettings:PublisherBroker:Port");
+        _publishIntervalMinutes = _configuration.GetValue<int>("MqttSettings:PublisherBroker:PublishIntervalMinutes", 5);
 
-        // Mantiene una instancia estática de las opciones de serialización para optimizar el rendimiento
-        private readonly JsonSerializerOptions _jsonOptions = new() { WriteIndented = true };
+        string influxUrl = _configuration["InfluxDbSettings:Url"] ?? "http://localhost:8086";
+        string influxToken = _configuration["InfluxDbSettings:Token"] ?? string.Empty;
+        _influxBucket = _configuration["InfluxDbSettings:Bucket"] ?? "default";
+        _influxOrg = _configuration["InfluxDbSettings:Org"] ?? "default";
 
-        /// <summary>
-        /// Inicializa una nueva instancia del servicio publicador, configurando las dependencias, 
-        /// estableciendo los parámetros de conexión y recuperando el estado de envíos previo.
-        /// </summary>
-        public MqttPublisherWorker(ILogger<MqttPublisherWorker> logger, IConfiguration configuration)
+        var factory = new MqttClientFactory();
+        _mqttPublisherClient = factory.CreateMqttClient();
+
+        var influxOptions = new InfluxDBClientOptions(influxUrl)
         {
-            _logger = logger;
-            _configuration = configuration;
+            Token = influxToken,
+            Bucket = _influxBucket,
+            Org = _influxOrg,
+            Timeout = TimeSpan.FromMinutes(2)
+        };
+        _influxClient = new InfluxDBClient(influxOptions);
 
-            // Recupera las bases de tópicos para clasificar el destino de ambos dispositivos
-            _pubMeterBaseTopic = _configuration["MqttSettings:MeterTopic"] ?? "energy-meter";
-            _pubPlugBaseTopic = _configuration["MqttSettings:PlugTopic"] ?? "smart-plug";
+        LoadStateFromDisk();
+    }
 
-            _pubHost = _configuration["MqttSettings:PublisherBroker:Host"] ?? "localhost";
-            _pubPort = _configuration.GetValue<int>("MqttSettings:PublisherBroker:Port");
-            _publishIntervalMinutes = _configuration.GetValue<int>("MqttSettings:PublisherBroker:PublishIntervalMinutes", 5);
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        var pubMqttOptions = new MqttClientOptionsBuilder()
+            .WithTcpServer(_pubHost, _pubPort)
+            .WithClientId("PublisherWorker_Sender")
+            .WithCleanSession()
+            .Build();
 
-            string influxUrl = _configuration["InfluxDbSettings:Url"] ?? "http://localhost:8086";
-            string influxToken = _configuration["InfluxDbSettings:Token"] ?? string.Empty;
-            _influxBucket = _configuration["InfluxDbSettings:Bucket"] ?? "default";
-            _influxOrg = _configuration["InfluxDbSettings:Org"] ?? "default";
+        _logger.LogInformation("Iniciando MqttPublisherWorker. Conectando al Broker Destino en {Host}:{Port}...", _pubHost, _pubPort);
 
-            var factory = new MqttClientFactory();
-            _mqttPublisherClient = factory.CreateMqttClient();
-
-            var influxOptions = new InfluxDBClientOptions(influxUrl)
-            {
-                Token = influxToken,
-                Bucket = _influxBucket,
-                Org = _influxOrg,
-                Timeout = TimeSpan.FromMinutes(2) // Aumentar a 2 minutos para consultas pesadas
-            };
-            _influxClient = new InfluxDBClient(influxOptions);
-
-            LoadStateFromDisk();
+        try
+        {
+            await _mqttPublisherClient.ConnectAsync(pubMqttOptions, stoppingToken);
+            _logger.LogInformation("Conectado al Broker de Publicación exitosamente.");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Fallo inicial al conectar con el Broker de Publicación.");
         }
 
-        /// <summary>
-        /// Ejecuta el ciclo de vida principal del servicio, conectando al broker MQTT de destino 
-        /// e iterando en intervalos regulares para extraer, procesar y publicar los datos.
-        /// </summary>
-        protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+        while (!stoppingToken.IsCancellationRequested)
         {
-            var pubMqttOptions = new MqttClientOptionsBuilder()
-                .WithTcpServer(_pubHost, _pubPort)
-                .WithClientId("PublisherWorker_Sender")
-                .WithCleanSession()
-                .Build();
+            TimeSpan delayToNextRun = GetDelayToNextInterval(_publishIntervalMinutes);
 
-            _logger.LogInformation("Iniciando MqttPublisherWorker. Conectando al Broker Destino en {Host}:{Port}...", _pubHost, _pubPort);
+            _logger.LogInformation("Próximo envío programado en {Minutos}m {Segundos}s...",
+                delayToNextRun.Minutes, delayToNextRun.Seconds);
 
-            try
+            await Task.Delay(delayToNextRun, stoppingToken);
+
+            if (!_mqttPublisherClient.IsConnected)
             {
-                await _mqttPublisherClient.ConnectAsync(pubMqttOptions, stoppingToken);
-                _logger.LogInformation("Conectado al Broker de Publicación exitosamente.");
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Fallo inicial al conectar con el Broker de Publicación.");
+                _logger.LogWarning("Broker de Publicación desconectado. Intentando reconexión...");
+                try { await _mqttPublisherClient.ConnectAsync(pubMqttOptions, stoppingToken); }
+                catch { continue; }
             }
 
-            while (!stoppingToken.IsCancellationRequested)
+            bool metersChanged = await PublishEnergyMetersAsync(stoppingToken);
+            bool plugsChanged = await PublishSmartPlugsAsync(stoppingToken);
+
+            if (metersChanged || plugsChanged)
             {
-                TimeSpan delayToNextRun = GetDelayToNextInterval(_publishIntervalMinutes);
-
-                _logger.LogInformation("Próximo envío programado en {Minutos}m {Segundos}s...",
-                    delayToNextRun.Minutes, delayToNextRun.Seconds);
-
-                await Task.Delay(delayToNextRun, stoppingToken);
-
-                if (!_mqttPublisherClient.IsConnected)
-                {
-                    _logger.LogWarning("Broker de Publicación desconectado. Intentando reconexión antes de publicar...");
-                    try { await _mqttPublisherClient.ConnectAsync(pubMqttOptions, stoppingToken); }
-                    catch { continue; }
-                }
-
-                // Publica de forma independiente los datos de medidores y de enchufes
-                bool metersChanged = await PublishEnergyMetersAsync(stoppingToken);
-                bool plugsChanged = await PublishSmartPlugsAsync(stoppingToken);
-
-                // Persiste el estado solo si hubo datos nuevos enviados
-                if (metersChanged || plugsChanged)
-                {
-                    SaveStateToDisk();
-                }
-            }
-
-            if (_mqttPublisherClient.IsConnected)
-            {
-                await _mqttPublisherClient.DisconnectAsync(new MqttClientDisconnectOptions(), CancellationToken.None);
+                SaveStateToDisk();
             }
         }
 
-        /// <summary>
-        /// Consulta, reconstruye y publica los datos históricos recientes correspondientes a los medidores de energía.
-        /// Retorna verdadero si se publicaron nuevos lotes, indicando un cambio de estado.
-        /// </summary>
-        private async Task<bool> PublishEnergyMetersAsync(CancellationToken stoppingToken)
+        if (_mqttPublisherClient.IsConnected)
         {
-            bool stateChanged = false;
-            try
+            await _mqttPublisherClient.DisconnectAsync(new MqttClientDisconnectOptions(), CancellationToken.None);
+        }
+    }
+
+    private async Task<bool> PublishEnergyMetersAsync(CancellationToken stoppingToken)
+    {
+        bool stateChanged = false;
+        try
+        {
+            DateTime now = DateTime.UtcNow;
+            DateTime queryStop = new DateTime(now.Year, now.Month, now.Day, now.Hour, now.Minute, 0, DateTimeKind.Utc);
+            DateTime maxLookback = now.AddMinutes(-60);
+
+            var meterTimestamps = _lastSentTimestamps
+                .Where(kvp => kvp.Key.StartsWith("meter_"))
+                .Select(kvp => kvp.Value)
+                .ToList();
+
+            DateTime queryStart = meterTimestamps.Any() ? meterTimestamps.Min() : now.AddDays(-1);
+
+            if (queryStart < maxLookback)
             {
-                DateTime now = DateTime.UtcNow;
+                queryStart = maxLookback;
+                _logger.LogWarning("El timestamp guardado era demasiado antiguo. Recortando inicio de consulta a {Time}.", queryStart);
+            }
 
-                // Límite Superior: Minuto actual truncado a 0 segundos. 
-                // En Flux el parámetro 'stop' es exclusivo, por lo que llegará hasta el segundo :59 del minuto anterior.
-                DateTime queryStop = new DateTime(now.Year, now.Month, now.Day, now.Hour, now.Minute, 0, DateTimeKind.Utc);
+            if (queryStart < now.AddDays(-7)) queryStart = now.AddDays(-7);
 
-                DateTime maxLookback = now.AddMinutes(-60);
+            string fluxQuery = $@"
+                import ""influxdata/influxdb/schema""
+                from(bucket: ""{_influxBucket}"")
+                |> range(start: {queryStart:yyyy-MM-ddTHH:mm:ss.fffZ}, stop: {queryStop:yyyy-MM-ddTHH:mm:ss.fffZ})
+                |> filter(fn: (r) => r[""_measurement""] == ""energy-meters"")
+                |> schema.fieldsAsCols()";
 
-                // Límite Inferior: El timestamp más antiguo no enviado de todos los medidores.
-                var meterTimestamps = _lastSentTimestamps
-                    .Where(kvp => kvp.Key.StartsWith("meter_"))
-                    .Select(kvp => kvp.Value)
-                    .ToList();
+            var queryApi = _influxClient.GetQueryApi();
+            var tables = await queryApi.QueryAsync(fluxQuery, _influxOrg, stoppingToken);
 
-                DateTime queryStart = meterTimestamps.Any() ? meterTimestamps.Min() : now.AddDays(-1);
+            var groupedData = new Dictionary<string, List<Dictionary<string, object>>>();
 
-                if (queryStart < maxLookback)
+            foreach (var table in tables)
+            {
+                foreach (var record in table.Records)
                 {
-                    queryStart = maxLookback;
-                    _logger.LogWarning("El timestamp guardado era demasiado antiguo. Recortando inicio de consulta a {Time} para evitar Timeout en Influx.", queryStart);
-                }
+                    var meterId = record.GetValueByKey("deviceId")?.ToString();
+                    var recordTime = record.GetTimeInDateTime();
 
-                // Medida de seguridad opcional para no asfixiar a InfluxDB si un medidor estuvo apagado meses
-                if (queryStart < now.AddDays(-7)) queryStart = now.AddDays(-7);
+                    if (string.IsNullOrEmpty(meterId) || recordTime == null) continue;
 
-                string fluxQuery = $@"
-                    import ""influxdata/influxdb/schema""
-                    from(bucket: ""{_influxBucket}"")
-                    |> range(start: {queryStart:yyyy-MM-ddTHH:mm:ss.fffZ}, stop: {queryStop:yyyy-MM-ddTHH:mm:ss.fffZ})
-                    |> filter(fn: (r) => r[""_measurement""] == ""energy-meters"")
-                    |> schema.fieldsAsCols()";
+                    string stateKey = $"meter_{meterId}";
+                    _lastSentTimestamps.TryGetValue(stateKey, out DateTime lastSentForMeter);
 
-                var queryApi = _influxClient.GetQueryApi();
-                var tables = await queryApi.QueryAsync(fluxQuery, _influxOrg, stoppingToken);
+                    if (recordTime.Value <= lastSentForMeter.ToUniversalTime()) continue;
 
-                var groupedData = new Dictionary<string, List<Dictionary<string, object>>>();
+                    if (!groupedData.ContainsKey(meterId))
+                        groupedData[meterId] = new List<Dictionary<string, object>>();
 
-                foreach (var table in tables)
-                {
-                    foreach (var record in table.Records)
+                    var dataPoint = new Dictionary<string, object> { ["timestamp"] = recordTime.Value.ToString("O") };
+
+                    var tempDftV = new SortedDictionary<int, double>();
+                    var tempDftI = new SortedDictionary<int, double>();
+
+                    foreach (var row in record.Values)
                     {
-                        var meterId = record.GetValueByKey("deviceId")?.ToString();
-                        var recordTime = record.GetTimeInDateTime();
+                        if (row.Key.StartsWith("_") || row.Key == "table" || row.Key == "result" || row.Key == "deviceId") continue;
 
-                        if (string.IsNullOrEmpty(meterId) || recordTime == null) continue;
-
-                        string stateKey = $"meter_{meterId}";
-                        _lastSentTimestamps.TryGetValue(stateKey, out DateTime lastSentForMeter);
-
-                        // Omite estrictamente registros que ya fueron enviados previamente para este medidor en particular
-                        if (recordTime.Value <= lastSentForMeter.ToUniversalTime()) continue;
-
-                        if (!groupedData.ContainsKey(meterId))
-                            groupedData[meterId] = new List<Dictionary<string, object>>();
-
-                        var dataPoint = new Dictionary<string, object> { ["timestamp"] = recordTime.Value.ToString("O") };
-
-                        var tempDftV = new SortedDictionary<int, double>();
-                        var tempDftI = new SortedDictionary<int, double>();
-
-                        foreach (var row in record.Values)
+                        if (row.Key.StartsWith("dftV") && int.TryParse(row.Key.AsSpan(4), out int vIndex))
                         {
-                            if (row.Key.StartsWith("_") || row.Key == "table" || row.Key == "result" || row.Key == "deviceId") continue;
-
-                            if (row.Key.StartsWith("dftV") && int.TryParse(row.Key.AsSpan(4), out int vIndex))
-                            {
-                                tempDftV[vIndex] = Convert.ToDouble(row.Value ?? 0);
-                            }
-                            else if (row.Key.StartsWith("dftI") && int.TryParse(row.Key.AsSpan(4), out int iIndex))
-                            {
-                                tempDftI[iIndex] = Convert.ToDouble(row.Value ?? 0);
-                            }
-                            else
-                            {
-                                dataPoint[row.Key] = row.Value!;
-                            }
+                            tempDftV[vIndex] = Convert.ToDouble(row.Value ?? 0);
                         }
-
-                        if (tempDftV.Count != 0) dataPoint["dftV"] = tempDftV.Values.ToList();
-                        if (tempDftI.Count != 0) dataPoint["dftI"] = tempDftI.Values.ToList();
-
-                        groupedData[meterId].Add(dataPoint);
-                    }
-                }
-
-                foreach (var meterGroup in groupedData)
-                {
-                    string deviceId = meterGroup.Key;
-                    var sortedRecords = meterGroup.Value.OrderBy(x => DateTime.Parse(x["timestamp"].ToString()!)).ToList();
-
-                    if (!sortedRecords.Any()) continue;
-
-                    string payloadJson = JsonSerializer.Serialize(new { batch = sortedRecords }, _jsonOptions);
-                    string publishTopic = $"{_pubMeterBaseTopic}/{deviceId}/data";
-
-                    var message = new MqttApplicationMessageBuilder()
-                        .WithTopic(publishTopic)
-                        .WithPayload(payloadJson)
-                        .WithQualityOfServiceLevel(MQTTnet.Protocol.MqttQualityOfServiceLevel.AtLeastOnce)
-                        .Build();
-
-                    await _mqttPublisherClient.PublishAsync(message, stoppingToken);
-
-                    DateTime newestRecordTime = DateTime.Parse(
-                        sortedRecords.Last()["timestamp"].ToString()!, null, System.Globalization.DateTimeStyles.AdjustToUniversal);
-
-                    _lastSentTimestamps[$"meter_{deviceId}"] = newestRecordTime;
-                    stateChanged = true;
-
-                    _logger.LogInformation("[Meter] Lote de {Count} registros publicados para {deviceId} (Último timestamp: {Time}).",
-                        sortedRecords.Count, deviceId, newestRecordTime);
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error durante la extracción y publicación de medidores de energía.");
-            }
-            return stateChanged;
-        }
-
-        /// <summary>
-        /// Consulta, agrupa y publica los datos históricos recientes correspondientes a los enchufes inteligentes.
-        /// Retorna verdadero si se publicaron nuevos lotes, indicando un cambio de estado.
-        /// </summary>
-        private async Task<bool> PublishSmartPlugsAsync(CancellationToken stoppingToken)
-        {
-            bool stateChanged = false;
-            try
-            {
-                DateTime now = DateTime.UtcNow;
-
-                // Límite Superior: Minuto actual truncado a 0 segundos (exclusivo en InfluxDB)
-                DateTime queryStop = new DateTime(now.Year, now.Month, now.Day, now.Hour, now.Minute, 0, DateTimeKind.Utc);
-
-                DateTime maxLookback = now.AddMinutes(-60);
-
-                // Límite Inferior: El timestamp más antiguo no enviado de los enchufes
-                var plugTimestamps = _lastSentTimestamps
-                    .Where(kvp => kvp.Key.StartsWith("plug_"))
-                    .Select(kvp => kvp.Value)
-                    .ToList();
-
-                DateTime queryStart = plugTimestamps.Any() ? plugTimestamps.Min() : now.AddDays(-1);
-
-                if (queryStart < maxLookback)
-                {
-                    queryStart = maxLookback;
-                    _logger.LogWarning("El timestamp guardado era demasiado antiguo. Recortando inicio de consulta a {Time} para evitar Timeout en Influx.", queryStart);
-                }
-
-                // Medida de seguridad para no asfixiar InfluxDB
-                if (queryStart < now.AddDays(-7)) queryStart = now.AddDays(-7);
-
-                string fluxQuery = $@"
-                    import ""influxdata/influxdb/schema""
-                    from(bucket: ""{_influxBucket}"")
-                    |> range(start: {queryStart:yyyy-MM-ddTHH:mm:ss.fffZ}, stop: {queryStop:yyyy-MM-ddTHH:mm:ss.fffZ})
-                    |> filter(fn: (r) => r[""_measurement""] == ""smart-plugs"")
-                    |> schema.fieldsAsCols()";
-
-                var queryApi = _influxClient.GetQueryApi();
-                var tables = await queryApi.QueryAsync(fluxQuery, _influxOrg, stoppingToken);
-
-                var groupedData = new Dictionary<string, List<Dictionary<string, object>>>();
-
-                foreach (var table in tables)
-                {
-                    foreach (var record in table.Records)
-                    {
-                        var plugId = record.GetValueByKey("deviceId")?.ToString();
-                        var recordTime = record.GetTimeInDateTime();
-
-                        if (string.IsNullOrEmpty(plugId) || recordTime == null) continue;
-
-                        string stateKey = $"plug_{plugId}";
-                        _lastSentTimestamps.TryGetValue(stateKey, out DateTime lastSentForPlug);
-
-                        // Omite registros que ya fueron enviados previamente
-                        if (recordTime.Value <= lastSentForPlug.ToUniversalTime()) continue;
-
-                        if (!groupedData.ContainsKey(plugId))
-                            groupedData[plugId] = new List<Dictionary<string, object>>();
-
-                        var dataPoint = new Dictionary<string, object> { ["timestamp"] = recordTime.Value.ToString("O") };
-
-                        foreach (var row in record.Values)
+                        else if (row.Key.StartsWith("dftI") && int.TryParse(row.Key.AsSpan(4), out int iIndex))
                         {
-                            // Ignora los metadatos internos propios de InfluxDB
-                            if (row.Key.StartsWith("_") || row.Key == "table" || row.Key == "result" || row.Key == "deviceId") continue;
+                            tempDftI[iIndex] = Convert.ToDouble(row.Value ?? 0);
+                        }
+                        else
+                        {
                             dataPoint[row.Key] = row.Value!;
                         }
-
-                        groupedData[plugId].Add(dataPoint);
                     }
-                }
 
-                foreach (var plugGroup in groupedData)
-                {
-                    string deviceId = plugGroup.Key;
-                    var sortedRecords = plugGroup.Value.OrderBy(x => DateTime.Parse(x["timestamp"].ToString()!)).ToList();
+                    if (tempDftV.Count != 0) dataPoint["dftV"] = tempDftV.Values.ToList();
+                    if (tempDftI.Count != 0) dataPoint["dftI"] = tempDftI.Values.ToList();
 
-                    if (!sortedRecords.Any()) continue;
-
-                    string payloadJson = JsonSerializer.Serialize(new { batch = sortedRecords }, _jsonOptions);
-                    string publishTopic = $"{_pubPlugBaseTopic}/{deviceId}/data";
-
-                    var message = new MqttApplicationMessageBuilder()
-                        .WithTopic(publishTopic)
-                        .WithPayload(payloadJson)
-                        .WithQualityOfServiceLevel(MQTTnet.Protocol.MqttQualityOfServiceLevel.AtLeastOnce)
-                        .Build();
-
-                    await _mqttPublisherClient.PublishAsync(message, stoppingToken);
-
-                    DateTime newestRecordTime = DateTime.Parse(
-                        sortedRecords.Last()["timestamp"].ToString()!, null, System.Globalization.DateTimeStyles.AdjustToUniversal);
-
-                    _lastSentTimestamps[$"plug_{deviceId}"] = newestRecordTime;
-                    stateChanged = true;
-
-                    _logger.LogInformation("[Plug] Lote de {Count} registros publicados para {deviceId} (Último timestamp: {Time}).",
-                        sortedRecords.Count, deviceId, newestRecordTime);
+                    groupedData[meterId].Add(dataPoint);
                 }
             }
-            catch (Exception ex)
+
+            foreach (var meterGroup in groupedData)
             {
-                _logger.LogError(ex, "Error durante la extracción y publicación de enchufes inteligentes.");
+                string deviceId = meterGroup.Key;
+                var sortedRecords = meterGroup.Value.OrderBy(x => DateTime.Parse(x["timestamp"].ToString()!)).ToList();
+
+                if (!sortedRecords.Any()) continue;
+
+                string payloadJson = JsonSerializer.Serialize(new { batch = sortedRecords }, _jsonOptions);
+                string publishTopic = $"{_pubMeterBaseTopic}/{deviceId}/data";
+
+                var message = new MqttApplicationMessageBuilder()
+                    .WithTopic(publishTopic)
+                    .WithPayload(payloadJson)
+                    .WithQualityOfServiceLevel(MQTTnet.Protocol.MqttQualityOfServiceLevel.AtLeastOnce)
+                    .Build();
+
+                await _mqttPublisherClient.PublishAsync(message, stoppingToken);
+
+                DateTime newestRecordTime = DateTime.Parse(
+                    sortedRecords.Last()["timestamp"].ToString()!, null, System.Globalization.DateTimeStyles.AdjustToUniversal);
+
+                _lastSentTimestamps[$"meter_{deviceId}"] = newestRecordTime;
+                stateChanged = true;
+
+                _logger.LogInformation("[Meter] Lote de {Count} registros publicados para {deviceId}.", sortedRecords.Count, deviceId);
             }
-            return stateChanged;
         }
-
-        /// <summary>
-        /// Calcula el tiempo de espera necesario para sincronizar la próxima ejecución 
-        /// con el inicio exacto del siguiente intervalo configurado.
-        /// </summary>
-        private TimeSpan GetDelayToNextInterval(int intervalMinutes)
+        catch (Exception ex)
         {
-            var now = DateTime.UtcNow;
-            int minutesToNext = intervalMinutes - (now.Minute % intervalMinutes);
-
-            DateTime nextBoundary = new DateTime(now.Year, now.Month, now.Day, now.Hour, now.Minute, 0, DateTimeKind.Utc)
-                .AddMinutes(minutesToNext)
-                .AddSeconds(5);
-
-            return nextBoundary - now;
+            _logger.LogError(ex, "Error durante la extracción y publicación de medidores de energía.");
         }
+        return stateChanged;
+    }
 
-        /// <summary>
-        /// Carga el estado temporal de publicación desde el disco, realizando una migración 
-        /// automática de las claves heredadas para incorporar los nuevos prefijos de dispositivo.
-        /// </summary>
-        private void LoadStateFromDisk()
+    private async Task<bool> PublishSmartPlugsAsync(CancellationToken stoppingToken)
+    {
+        bool stateChanged = false;
+        try
         {
-            try
+            DateTime now = DateTime.UtcNow;
+            DateTime queryStop = new DateTime(now.Year, now.Month, now.Day, now.Hour, now.Minute, 0, DateTimeKind.Utc);
+            DateTime maxLookback = now.AddMinutes(-60);
+
+            var plugTimestamps = _lastSentTimestamps
+                .Where(kvp => kvp.Key.StartsWith("plug_"))
+                .Select(kvp => kvp.Value)
+                .ToList();
+
+            DateTime queryStart = plugTimestamps.Any() ? plugTimestamps.Min() : now.AddDays(-1);
+
+            if (queryStart < maxLookback)
             {
-                if (File.Exists(_stateFilePath))
+                queryStart = maxLookback;
+                _logger.LogWarning("El timestamp guardado era demasiado antiguo. Recortando inicio de consulta a {Time}.", queryStart);
+            }
+
+            if (queryStart < now.AddDays(-7)) queryStart = now.AddDays(-7);
+
+            string fluxQuery = $@"
+                import ""influxdata/influxdb/schema""
+                from(bucket: ""{_influxBucket}"")
+                |> range(start: {queryStart:yyyy-MM-ddTHH:mm:ss.fffZ}, stop: {queryStop:yyyy-MM-ddTHH:mm:ss.fffZ})
+                |> filter(fn: (r) => r[""_measurement""] == ""smart-plugs"")
+                |> schema.fieldsAsCols()";
+
+            var queryApi = _influxClient.GetQueryApi();
+            var tables = await queryApi.QueryAsync(fluxQuery, _influxOrg, stoppingToken);
+
+            var groupedData = new Dictionary<string, List<Dictionary<string, object>>>();
+
+            foreach (var table in tables)
+            {
+                foreach (var record in table.Records)
                 {
-                    var json = File.ReadAllText(_stateFilePath);
-                    var dict = JsonSerializer.Deserialize<Dictionary<string, DateTime>>(json);
-                    if (dict != null)
+                    var plugId = record.GetValueByKey("deviceId")?.ToString();
+                    var recordTime = record.GetTimeInDateTime();
+
+                    if (string.IsNullOrEmpty(plugId) || recordTime == null) continue;
+
+                    string stateKey = $"plug_{plugId}";
+                    _lastSentTimestamps.TryGetValue(stateKey, out DateTime lastSentForPlug);
+
+                    if (recordTime.Value <= lastSentForPlug.ToUniversalTime()) continue;
+
+                    if (!groupedData.ContainsKey(plugId))
+                        groupedData[plugId] = new List<Dictionary<string, object>>();
+
+                    var dataPoint = new Dictionary<string, object> { ["timestamp"] = recordTime.Value.ToString("O") };
+
+                    var tempStatus = new SortedDictionary<int, int>();
+
+                    foreach (var row in record.Values)
                     {
-                        foreach (var kvp in dict)
-                        {
-                            if (!kvp.Key.StartsWith("meter_") && !kvp.Key.StartsWith("plug_"))
-                                _lastSentTimestamps[$"meter_{kvp.Key}"] = kvp.Value;
-                            else
-                                _lastSentTimestamps[kvp.Key] = kvp.Value;
-                        }
+                        if (row.Key.StartsWith("_") || row.Key == "table" || row.Key == "result" || row.Key == "deviceId") continue;
 
-                        _logger.LogInformation("Estado de publicación cargado. Rastreando {Count} dispositivos.", _lastSentTimestamps.Count);
-                        return;
+                        if (row.Key.StartsWith("status") && int.TryParse(row.Key.AsSpan(6), out int sIndex))
+                        {
+                            tempStatus[sIndex] = Convert.ToInt32(row.Value ?? 0);
+                        }
+                        else
+                        {
+                            dataPoint[row.Key] = row.Value!;
+                        }
                     }
+
+                    if (tempStatus.Count != 0) dataPoint["status"] = tempStatus.Values.ToList();
+
+                    groupedData[plugId].Add(dataPoint);
                 }
             }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Fallo al leer el estado de publicación. Se iniciará desde los últimos minutos.");
-            }
-        }
 
-        /// <summary>
-        /// Guarda el estado actual de los últimos envíos en el disco para preservar 
-        /// la continuidad operativa frente a posibles reinicios del servicio.
-        /// </summary>
-        private void SaveStateToDisk()
-        {
-            try
+            foreach (var plugGroup in groupedData)
             {
-                var dictToSave = new Dictionary<string, DateTime>(_lastSentTimestamps);
-                var json = JsonSerializer.Serialize(dictToSave, new JsonSerializerOptions { WriteIndented = true });
-                File.WriteAllText(_stateFilePath, json);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "No se pudo guardar el estado de publicación en el disco.");
-            }
-        }
+                string deviceId = plugGroup.Key;
+                var sortedRecords = plugGroup.Value.OrderBy(x => DateTime.Parse(x["timestamp"].ToString()!)).ToList();
 
-        /// <summary>
-        /// Libera los recursos no administrados y cierra las conexiones abiertas de red.
-        /// </summary>
-        public override void Dispose()
-        {
-            _mqttPublisherClient?.Dispose();
-            _influxClient?.Dispose();
-            base.Dispose();
+                if (!sortedRecords.Any()) continue;
+
+                string payloadJson = JsonSerializer.Serialize(new { batch = sortedRecords }, _jsonOptions);
+                string publishTopic = $"{_pubPlugBaseTopic}/{deviceId}/data";
+
+                var message = new MqttApplicationMessageBuilder()
+                    .WithTopic(publishTopic)
+                    .WithPayload(payloadJson)
+                    .WithQualityOfServiceLevel(MQTTnet.Protocol.MqttQualityOfServiceLevel.AtLeastOnce)
+                    .Build();
+
+                await _mqttPublisherClient.PublishAsync(message, stoppingToken);
+
+                DateTime newestRecordTime = DateTime.Parse(
+                    sortedRecords.Last()["timestamp"].ToString()!, null, System.Globalization.DateTimeStyles.AdjustToUniversal);
+
+                _lastSentTimestamps[$"plug_{deviceId}"] = newestRecordTime;
+                stateChanged = true;
+
+                _logger.LogInformation("[Plug] Lote de {Count} registros publicados para {deviceId}.", sortedRecords.Count, deviceId);
+            }
         }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error durante la extracción y publicación de enchufes inteligentes.");
+        }
+        return stateChanged;
+    }
+
+    private TimeSpan GetDelayToNextInterval(int intervalMinutes)
+    {
+        var now = DateTime.UtcNow;
+        int minutesToNext = intervalMinutes - (now.Minute % intervalMinutes);
+
+        DateTime nextBoundary = new DateTime(now.Year, now.Month, now.Day, now.Hour, now.Minute, 0, DateTimeKind.Utc)
+            .AddMinutes(minutesToNext)
+            .AddSeconds(5);
+
+        return nextBoundary - now;
+    }
+
+    private void LoadStateFromDisk()
+    {
+        try
+        {
+            if (File.Exists(_stateFilePath))
+            {
+                var json = File.ReadAllText(_stateFilePath);
+                var dict = JsonSerializer.Deserialize<Dictionary<string, DateTime>>(json);
+                if (dict != null)
+                {
+                    foreach (var kvp in dict)
+                    {
+                        if (!kvp.Key.StartsWith("meter_") && !kvp.Key.StartsWith("plug_"))
+                            _lastSentTimestamps[$"meter_{kvp.Key}"] = kvp.Value;
+                        else
+                            _lastSentTimestamps[kvp.Key] = kvp.Value;
+                    }
+
+                    _logger.LogInformation("Estado de publicación cargado. Rastreando {Count} dispositivos.", _lastSentTimestamps.Count);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Fallo al leer el estado de publicación. Se iniciará desde los últimos minutos.");
+        }
+    }
+
+    private void SaveStateToDisk()
+    {
+        try
+        {
+            var dictToSave = new Dictionary<string, DateTime>(_lastSentTimestamps);
+            var json = JsonSerializer.Serialize(dictToSave, new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(_stateFilePath, json);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "No se pudo guardar el estado de publicación en el disco.");
+        }
+    }
+
+    public override void Dispose()
+    {
+        _mqttPublisherClient?.Dispose();
+        _influxClient?.Dispose();
+        base.Dispose();
     }
 }

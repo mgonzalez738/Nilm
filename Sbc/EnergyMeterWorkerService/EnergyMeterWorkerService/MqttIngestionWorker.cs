@@ -20,7 +20,6 @@ public class MqttIngestionWorker : BackgroundService
     private readonly WriteApiAsync _writeApiAsync;
     private readonly IMqttClient _mqttIngestionClient;
 
-    // Tópicos base utilizados para identificar la procedencia de los mensajes
     private readonly string _meterTopicRoot;
     private readonly string _plugTopicRoot;
 
@@ -29,18 +28,14 @@ public class MqttIngestionWorker : BackgroundService
     private readonly string _influxBucket;
     private readonly string _influxOrg;
 
-    // Mantiene una instancia estática de las opciones de serialización para optimizar el rendimiento
+    // Solo se usa para el medidor de energía ahora
     private static readonly JsonSerializerOptions _jsonOptions = new() { PropertyNameCaseInsensitive = true };
 
-    /// <summary>
-    /// Inicializa una nueva instancia del worker, configurando las dependencias y conexiones necesarias.
-    /// </summary>
     public MqttIngestionWorker(ILogger<MqttIngestionWorker> logger, IConfiguration configuration)
     {
         _logger = logger;
         _configuration = configuration;
 
-        // Recupera la configuración de los tópicos para diferenciar los dispositivos
         _meterTopicRoot = _configuration["MqttSettings:MeterTopic"] ?? "energy-meter";
         _plugTopicRoot = _configuration["MqttSettings:PlugTopic"] ?? "smart-plug";
 
@@ -59,9 +54,6 @@ public class MqttIngestionWorker : BackgroundService
         _writeApiAsync = _influxClient.GetWriteApiAsync();
     }
 
-    /// <summary>
-    /// Ejecuta el ciclo de vida principal del servicio, conectando al broker MQTT y estableciendo el bucle de reconexión.
-    /// </summary>
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var ingestMqttOptions = new MqttClientOptionsBuilder()
@@ -70,10 +62,8 @@ public class MqttIngestionWorker : BackgroundService
             .WithCleanSession()
             .Build();
 
-        // Configura el manejador de eventos para procesar los mensajes MQTT entrantes
         _mqttIngestionClient.ApplicationMessageReceivedAsync += async e =>
         {
-            // Valida que el mensaje contenga un payload procesable
             if (e.ApplicationMessage?.Payload == null || e.ApplicationMessage.Payload.Length == 0)
                 return;
 
@@ -82,7 +72,6 @@ public class MqttIngestionWorker : BackgroundService
 
             try
             {
-                // Deriva el mensaje al método de procesamiento correspondiente según su tópico
                 if (topic.StartsWith(_meterTopicRoot))
                 {
                     await ProcessEnergyMeterPayload(topic, rawPayload, stoppingToken);
@@ -98,7 +87,6 @@ public class MqttIngestionWorker : BackgroundService
             }
         };
 
-        // Registra advertencias cuando se pierde la conexión con el broker
         _mqttIngestionClient.DisconnectedAsync += async e =>
         {
             _logger.LogWarning("Conexión perdida con el broker MQTT. Razón: {Reason}", e.Reason);
@@ -111,7 +99,6 @@ public class MqttIngestionWorker : BackgroundService
         {
             await _mqttIngestionClient.ConnectAsync(ingestMqttOptions, stoppingToken);
 
-            // Genera la suscripción múltiple para escuchar ambos comodines al mismo tiempo
             var mqttFactory = new MqttClientFactory();
             var subscribeOptions = mqttFactory.CreateSubscribeOptionsBuilder()
                 .WithTopicFilter(f => f.WithTopic($"{_meterTopicRoot}/+/data"))
@@ -126,7 +113,6 @@ public class MqttIngestionWorker : BackgroundService
             _logger.LogCritical(ex, "Fallo inicial de conexión en el worker unificado.");
         }
 
-        // Mantiene el servicio activo e intenta reconectar si la conexión se pierde
         while (!stoppingToken.IsCancellationRequested)
         {
             if (!_mqttIngestionClient.IsConnected)
@@ -143,31 +129,25 @@ public class MqttIngestionWorker : BackgroundService
                 }
                 catch
                 {
-                    // Permite que el bucle continúe reintentando silenciosamente
+                    // Reintento silencioso
                 }
             }
             await Task.Delay(TimeSpan.FromSeconds(10), stoppingToken);
         }
 
-        // Realiza una desconexión limpia al detener el servicio
         if (_mqttIngestionClient.IsConnected)
         {
             await _mqttIngestionClient.DisconnectAsync(new MqttClientDisconnectOptions(), CancellationToken.None);
         }
     }
 
-    /// <summary>
-    /// Deserializa, estructura y almacena los datos provenientes de un medidor de energía principal.
-    /// </summary>
     private async Task ProcessEnergyMeterPayload(string topic, string rawPayload, CancellationToken stoppingToken)
     {
         var data = JsonSerializer.Deserialize<EnergyMeterPayload>(rawPayload, _jsonOptions);
         if (data == null) return;
 
-        // Extrae el identificador del dispositivo desde el tópico
         string meterId = topic.Split('/')[1];
 
-        // Construye el punto de datos para InfluxDB con todos los campos de medición
         var point = PointData.Measurement("energy-meters")
             .Tag("deviceId", meterId)
             .Field("vRms", data.VRms)
@@ -190,62 +170,67 @@ public class MqttIngestionWorker : BackgroundService
             .Field("vRmsFund", data.VRmsFund)
             .Field("iRmsFund", data.IRmsFund);
 
-        // Agrega dinámicamente los valores de armónicos de tensión si están presentes
         if (data.DftV != null)
         {
-            for (int i = 0; i < data.DftV.Count; i++)
-            {
-                point = point.Field($"dftV{i}", data.DftV[i]);
-            }
+            for (int i = 0; i < data.DftV.Count; i++) point = point.Field($"dftV{i}", data.DftV[i]);
         }
 
-        // Agrega dinámicamente los valores de armónicos de corriente si están presentes
         if (data.DftI != null)
         {
-            for (int i = 0; i < data.DftI.Count; i++)
-            {
-                point = point.Field($"dftI{i}", data.DftI[i]);
-            }
+            for (int i = 0; i < data.DftI.Count; i++) point = point.Field($"dftI{i}", data.DftI[i]);
         }
 
-        // Asegura una marca de tiempo de alta precisión, utilizando el tiempo actual como respaldo
         DateTime deviceTime = DateTime.TryParse(data.Timestamp, out var dt) ? dt : DateTime.UtcNow;
         point = point.Timestamp(deviceTime, WritePrecision.Ns);
 
-        // Envía el punto de datos estructurado a InfluxDB
         await _writeApiAsync.WritePointAsync(point, _influxBucket, _influxOrg, stoppingToken);
     }
 
-    /// <summary>
-    /// Deserializa, estructura y almacena los datos provenientes de un enchufe inteligente.
-    /// </summary>
     private async Task ProcessSmartPlugPayload(string topic, string rawPayload, CancellationToken stoppingToken)
     {
-        var data = JsonSerializer.Deserialize<WSmartPlugPayload>(rawPayload, _jsonOptions);
-        if (data == null) return;
+        try
+        {
+            using var doc = JsonDocument.Parse(rawPayload);
+            var root = doc.RootElement;
 
-        // Extrae el identificador del dispositivo desde el tópico
-        string plugId = topic.Split('/')[1];
+            string plugId = topic.Split('/')[1];
 
-        // Construye el punto de datos para InfluxDB con los parámetros del enchufe
-        var point = PointData.Measurement("smart-plugs")
-            .Tag("deviceId", plugId)
-            .Field("voltage", data.Voltage)
-            .Field("current", data.Current)
-            .Field("power", data.Power)
-            .Field("status", (int)data.Status);
+            var point = PointData.Measurement("smart-plugs")
+                .Tag("deviceId", plugId);
 
-        // Asegura una marca de tiempo en formato universal
-        DateTime deviceTime = DateTime.TryParse(data.Timestamp, out var dt) ? dt.ToUniversalTime() : DateTime.UtcNow;
-        point = point.Timestamp(deviceTime, WritePrecision.Ns);
+            // Mapeo dinámico directo
+            if (root.TryGetProperty("voltage", out var v)) point = point.Field("voltage", v.GetDouble());
+            if (root.TryGetProperty("current", out var c)) point = point.Field("current", c.GetDouble());
+            if (root.TryGetProperty("activePower", out var ap)) point = point.Field("activePower", ap.GetDouble());
+            if (root.TryGetProperty("reactivePower", out var rp)) point = point.Field("reactivePower", rp.GetDouble());
 
-        // Envía el punto de datos estructurado a InfluxDB
-        await _writeApiAsync.WritePointAsync(point, _influxBucket, _influxOrg, stoppingToken);
+            // Aplanamiento del array de estados a status0, status1, etc.
+            if (root.TryGetProperty("status", out var statusArray) && statusArray.ValueKind == JsonValueKind.Array)
+            {
+                int index = 0;
+                foreach (var status in statusArray.EnumerateArray())
+                {
+                    point = point.Field($"status{index}", status.GetInt32());
+                    index++;
+                }
+            }
+
+            DateTime deviceTime = DateTime.UtcNow;
+            if (root.TryGetProperty("timestamp", out var ts) && DateTime.TryParse(ts.GetString(), out var dt))
+            {
+                deviceTime = dt.ToUniversalTime();
+            }
+
+            point = point.Timestamp(deviceTime, WritePrecision.Ns);
+
+            await _writeApiAsync.WritePointAsync(point, _influxBucket, _influxOrg, stoppingToken);
+        }
+        catch (JsonException ex)
+        {
+            _logger.LogError(ex, "Error al deserializar dinámicamente el payload del enchufe en el tópico {Topic}", topic);
+        }
     }
 
-    /// <summary>
-    /// Libera los recursos no administrados y finaliza las conexiones de cliente.
-    /// </summary>
     public override void Dispose()
     {
         _mqttIngestionClient?.Dispose();

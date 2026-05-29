@@ -24,10 +24,15 @@ public class WSmartPlugPayload
     /// <summary>
     /// Indica la potencia activa consumida instantáneamente por el dispositivo conectado al enchufe.
     /// </summary>
-    public double Power { get; set; }
+    public double ActivePower { get; set; }
 
     /// <summary>
-    /// Indica el estado operativo del relé interno del enchufe, señalando si la salida de corriente está activada o desactivada.
+    /// Indica la potencia activa consumida instantáneamente por el dispositivo conectado al enchufe.
     /// </summary>
-    public double Status { get; set; }
+    public double ReactivePower { get; set; }
+
+    /// <summary>
+    /// Indica el estado operativo de las cargas conectadas al enchufe inteligente
+    /// </summary>
+    public List<int> Status { get; set; } = [];
 }
