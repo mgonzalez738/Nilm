@@ -1,0 +1,43 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 18
+VisualStudioVersion = 18.2.11415.280
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EnergyMetersService.Application", "EnergyMetersService.Application\EnergyMetersService.Application.csproj", "{2D59550E-93E2-63A8-9232-35AD1814DE6E}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EnergyMetersService.Domain", "EnergyMetersService.Domain\EnergyMetersService.Domain.csproj", "{E105848F-ACD0-F3FE-39B9-D1C66B2D7E1B}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EnergyMetersService.Infraestructure", "EnergyMetersService.Infraestructure\EnergyMetersService.Infraestructure.csproj", "{F32D5336-D5EF-4539-AF6F-F55A1F373EBB}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "EnergyMetersService.Api", "EnergyMetersService.Api\EnergyMetersService.Api.csproj", "{56A82AB5-A411-4B0F-9B23-6B46E7931669}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{2D59550E-93E2-63A8-9232-35AD1814DE6E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{2D59550E-93E2-63A8-9232-35AD1814DE6E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{2D59550E-93E2-63A8-9232-35AD1814DE6E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{2D59550E-93E2-63A8-9232-35AD1814DE6E}.Release|Any CPU.Build.0 = Release|Any CPU
+		{E105848F-ACD0-F3FE-39B9-D1C66B2D7E1B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E105848F-ACD0-F3FE-39B9-D1C66B2D7E1B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E105848F-ACD0-F3FE-39B9-D1C66B2D7E1B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E105848F-ACD0-F3FE-39B9-D1C66B2D7E1B}.Release|Any CPU.Build.0 = Release|Any CPU
+		{F32D5336-D5EF-4539-AF6F-F55A1F373EBB}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{F32D5336-D5EF-4539-AF6F-F55A1F373EBB}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{F32D5336-D5EF-4539-AF6F-F55A1F373EBB}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{F32D5336-D5EF-4539-AF6F-F55A1F373EBB}.Release|Any CPU.Build.0 = Release|Any CPU
+		{56A82AB5-A411-4B0F-9B23-6B46E7931669}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{56A82AB5-A411-4B0F-9B23-6B46E7931669}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{56A82AB5-A411-4B0F-9B23-6B46E7931669}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{56A82AB5-A411-4B0F-9B23-6B46E7931669}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {A1CBC2A2-1B15-497A-9281-63A9640BB551}
+	EndGlobalSection
+EndGlobal
