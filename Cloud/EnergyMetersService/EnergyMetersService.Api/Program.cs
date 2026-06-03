@@ -1,3 +1,4 @@
+using EnergyMetersService.Api.Authentication;
 using EnergyMetersService.Api.Services;
 using EnergyMetersService.Application.DTOs;
 using EnergyMetersService.Application.Interfaces;
@@ -7,6 +8,7 @@ using EnergyMetersService.Domain.Interfaces;
 using EnergyMetersService.Infraestructure.Data.Models;
 using EnergyMetersService.Infraestructure.Data.Repositories;
 using FluentValidation;
+using Microsoft.AspNetCore.Authentication;
 
 namespace EnergyMetersService.Api
 {
@@ -19,6 +21,9 @@ namespace EnergyMetersService.Api
             // Add services to the container.
 
             builder.Services.AddControllers();
+
+            builder.Services.AddAuthentication("HeadersScheme")
+                            .AddScheme<AuthenticationSchemeOptions, HeadersAuthHandler>("HeadersScheme", null);
 
             builder.Services.AddHttpContextAccessor();
             builder.Services.AddScoped<IUserContext, ApiUserContext>();
@@ -37,6 +42,7 @@ namespace EnergyMetersService.Api
 
             // Configure the HTTP request pipeline.
 
+            app.UseAuthentication();
             app.UseAuthorization();
 
             app.MapControllers();

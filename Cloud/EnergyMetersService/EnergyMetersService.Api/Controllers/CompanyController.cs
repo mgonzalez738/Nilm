@@ -1,14 +1,14 @@
 ﻿using EnergyMetersService.Application.DTOs;
 using EnergyMetersService.Application.Interfaces;
-using EnergyMetersService.Application.Services;
 using FluentValidation;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 namespace EnergyMetersService.Api.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
-// [Authorize] // Descomentar cuando tengas configurado el login/JWT
+[Authorize]
 public class CompanyController(ICompanyService companyAppService) : ControllerBase
 {
     private readonly ICompanyService _companyAppService = companyAppService;
@@ -17,7 +17,6 @@ public class CompanyController(ICompanyService companyAppService) : ControllerBa
     [HttpGet]
     public ActionResult<IEnumerable<CompanyDto>> GetAll()
     {
-        // Materializamos la consulta a una lista
         var companies = _companyAppService.GetQueryable().ToList();
         return Ok(companies);
     }
@@ -33,7 +32,11 @@ public class CompanyController(ICompanyService companyAppService) : ControllerBa
         }
         catch (KeyNotFoundException ex)
         {
-            return NotFound(new { Message = ex.Message });
+            return Problem(
+                detail: ex.Message,
+                statusCode: StatusCodes.Status404NotFound,
+                title: "Resource Not Found"
+            );
         }
     }
 
@@ -44,18 +47,19 @@ public class CompanyController(ICompanyService companyAppService) : ControllerBa
         try
         {
             var newId = await _companyAppService.CreateCompanyAsync(dto);
-
-            // Devuelve un 201 Created y la ruta para consultar el nuevo registro
             return CreatedAtAction(nameof(GetById), new { id = newId }, new { Id = newId });
         }
         catch (UnauthorizedAccessException ex)
         {
-            return Forbid(ex.Message); // 403
+            return Problem(
+                detail: ex.Message,
+                statusCode: StatusCodes.Status403Forbidden,
+                title: "Forbidden Access"
+            );
         }
         catch (ValidationException ex)
         {
-            // Devuelve un 400 Bad Request con la lista de errores de FluentValidation
-            return BadRequest(new { Errors = ex.Errors.Select(e => e.ErrorMessage) });
+            return MapValidationException(ex);
         }
     }
 
@@ -66,19 +70,27 @@ public class CompanyController(ICompanyService companyAppService) : ControllerBa
         try
         {
             await _companyAppService.UpdateCompanyAsync(id, dto);
-            return NoContent(); // 204 No Content (es el estándar para un update exitoso)
+            return NoContent();
         }
         catch (KeyNotFoundException ex)
         {
-            return NotFound(new { Message = ex.Message });
+            return Problem(
+                detail: ex.Message,
+                statusCode: StatusCodes.Status404NotFound,
+                title: "Resource Not Found"
+            );
         }
         catch (UnauthorizedAccessException ex)
         {
-            return Forbid(ex.Message);
+            return Problem(
+                detail: ex.Message,
+                statusCode: StatusCodes.Status403Forbidden,
+                title: "Forbidden Access"
+            );
         }
         catch (ValidationException ex)
         {
-            return BadRequest(new { Errors = ex.Errors.Select(e => e.ErrorMessage) });
+            return MapValidationException(ex);
         }
     }
 
@@ -93,7 +105,34 @@ public class CompanyController(ICompanyService companyAppService) : ControllerBa
         }
         catch (UnauthorizedAccessException ex)
         {
-            return Forbid(ex.Message);
+            return Problem(
+                detail: ex.Message,
+                statusCode: StatusCodes.Status403Forbidden,
+                title: "Forbidden Access"
+            );
         }
+    }
+
+    /// <summary>
+    /// Helper method to map FluentValidation exceptions to standard RFC 7807 ValidationProblemDetails.
+    /// </summary>
+    private ActionResult MapValidationException(ValidationException ex)
+    {
+        // Agrupa los errores por nombre de propiedad (ej: "Name" -> ["El nombre es requerido", "Debe tener al menos 3 letras"])
+        var errorDictionary = ex.Errors
+            .GroupBy(e => e.PropertyName)
+            .ToDictionary(
+                g => g.Key,
+                g => g.Select(e => e.ErrorMessage).ToArray()
+            );
+
+        var problemDetails = new ValidationProblemDetails(errorDictionary)
+        {
+            Title = "Validation Failed",
+            Detail = "One or more validation errors occurred.",
+            Status = StatusCodes.Status400BadRequest
+        };
+
+        return ValidationProblem(problemDetails);
     }
 }
