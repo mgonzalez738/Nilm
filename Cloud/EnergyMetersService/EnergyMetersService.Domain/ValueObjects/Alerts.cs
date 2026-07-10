@@ -1,9 +1,8 @@
 ﻿namespace EnergyMetersService.Domain.ValueObjects;
 
-public record Alerts(
-    IReadOnlyCollection<AlertWatchdog> Watchdogs,
-    IReadOnlyCollection<AlertLimit> Limits,
-    IReadOnlyCollection<AlertNull> Nulls)
+public record Alerts()
 {
-    public static Alerts Empty => new([], [], []);
+    public IReadOnlyCollection<AlertWatchdog> Watchdogs { get; init; } = [];
+    public IReadOnlyCollection<AlertLimit> Limits { get; init; } = [];
+    public IReadOnlyCollection<AlertNull> Nulls { get; init; } = [];
 }

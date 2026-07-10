@@ -1,9 +1,10 @@
-﻿using EnergyMetersService.Domain.Entities;
-using EnergyMetersService.Infraestructure.Data.Interfaces;
-using MongoDB.Bson;
+﻿using MongoDB.Bson;
 using MongoDB.Bson.Serialization;
-using MongoDB.Bson.Serialization.IdGenerators;
 using MongoDB.Bson.Serialization.Serializers;
+using MongoDB.Bson.Serialization.IdGenerators;
+
+using EnergyMetersService.Domain.Entities;
+using EnergyMetersService.Infraestructure.Data.Interfaces;
 
 namespace EnergyMetersService.Infraestructure.Data.Configurations;
 

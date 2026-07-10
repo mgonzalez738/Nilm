@@ -1,3 +1,6 @@
 ﻿namespace EnergyMetersService.Domain.ValueObjects;
 
-public record SmartPlugSettings(SmartPlugAlertSettings Alerts);
+public record SmartPlugSettings()
+{
+    public SmartPlugAlertSettings Alerts { get; init; } = new();
+}

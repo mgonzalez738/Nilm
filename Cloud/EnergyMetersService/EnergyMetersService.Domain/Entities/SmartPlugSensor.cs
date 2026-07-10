@@ -18,9 +18,9 @@ public class SmartPlugSensor : Entity
     public Location Location { get; private set; }
     public SmartPlugSettings Settings { get; private set; }
     public Status Status { get; private set; }
-    public string? GrafanaDashboardLink { get; private set; }
+    public string GrafanaDashboardLink { get; private set; } = string.Empty;
 
-    public SmartPlugSensor(string name, string companyId, SmartPlugSettings defaultSettings)
+    public SmartPlugSensor(string name, string companyId)
     {
         if (string.IsNullOrWhiteSpace(name)) throw new ArgumentException("Name is required");
         if (string.IsNullOrWhiteSpace(companyId)) throw new ArgumentException("CompanyId is required");
@@ -28,9 +28,9 @@ public class SmartPlugSensor : Entity
         Name = name;
         Description = string.Empty;
         CompanyId = companyId;
-        Location = new Location(false, 0, 0);
-        Settings = defaultSettings;
-        Status = new Status(null, Alerts.Empty);
+        Location = new Location();
+        Settings = new SmartPlugSettings();
+        Status = new Status();
     }
 
     public void UpdateLocation(bool enabled, double? latitude = null, double? longitude = null)
@@ -40,11 +40,11 @@ public class SmartPlugSensor : Entity
             if (latitude == null || longitude == null)
                 throw new ArgumentException("Latitude and Longitude must be provided when location is enabled.");
 
-            Location = new Location(true, latitude.Value, longitude.Value);
+            Location = new() { Enabled = true, Latitude = latitude.Value, Longitude = longitude.Value };
         }
         else
         {
-            Location = new Location(false, 0, 0);
+            Location = new() { Enabled = false, Latitude = 0.0, Longitude = 0.0 };
         }
     }
 
@@ -72,7 +72,12 @@ public class SmartPlugSensor : Entity
         var updatedLimits = Status.Alerts.Limits.Where(a => a.Property != propertyName).ToList();
         var updatedWatchdogs = Status.Alerts.Watchdogs.Where(a => a.Property != propertyName).ToList();
 
-        var newAlerts = new Alerts(updatedWatchdogs, updatedLimits, Status.Alerts.Nulls);
+        var newAlerts = new Alerts()
+        {
+            Watchdogs = updatedWatchdogs,
+            Limits = updatedLimits,
+            Nulls = Status.Alerts.Nulls
+        };
 
         Status = Status with { Alerts = newAlerts };
     }

@@ -2,7 +2,9 @@
 
 public class Project : Entity
 {
-    public string? Name { get; set; }
+    public required string Name { get; set; } 
 
-    public string? CompanyId { get; set; }
+    public required string CompanyId { get; set; }
+
+    public Company? Company { get; set; }
 }

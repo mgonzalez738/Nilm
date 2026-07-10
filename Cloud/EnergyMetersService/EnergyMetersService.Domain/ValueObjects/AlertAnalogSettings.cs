@@ -1,8 +1,8 @@
 ﻿namespace EnergyMetersService.Domain.ValueObjects;
 
 public record AlertAnalogSettings(
-    bool NullEnabled,
-    bool LimitEnabled,
-    double LimitLow,
-    double LimitHigh,
-    double LimitHysteresis);
+    bool NullEnabled = false,
+    bool LimitEnabled = false,
+    double LimitLow = 0,
+    double LimitHigh = 0,
+    double LimitHysteresis = 0 );

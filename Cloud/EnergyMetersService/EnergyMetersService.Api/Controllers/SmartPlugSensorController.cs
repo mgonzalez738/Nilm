@@ -1,46 +1,46 @@
-﻿using EnergyMetersService.Application.DTOs;
+﻿using EnergyMetersService.Api.Extensions;
+using EnergyMetersService.Application.DTOs;
 using EnergyMetersService.Application.Interfaces;
 using FluentValidation;
+using Mapster;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Rendering;
 using Microsoft.AspNetCore.OData.Query;
+using MongoDB.AspNetCore.OData;
 
 namespace EnergyMetersService.Api.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
 [Authorize]
-public class CompanyController(ICompanyService companyAppService) : ControllerBase
+public class SmartPlugSensorController(
+    ISmartPlugSensorService sensorAppService,
+    ICompanyService companyAppService) : ControllerBase
 {
+    private readonly ISmartPlugSensorService _sensorAppService = sensorAppService;
     private readonly ICompanyService _companyAppService = companyAppService;
 
-    // GET: api/company
+    // GET: api/smartplugsensor
     [HttpGet]
-   public ActionResult GetAll(ODataQueryOptions<CompanyDto> options)
-   {
-        var query = _companyAppService.GetQueryable();
+    //[MongoEnableQuery]
+    public ActionResult GetAll()
+    {
+        var query = _sensorAppService.GetQueryable();
 
-        var dbQuery = options.ApplyTo(query, AllowedQueryOptions.Select | AllowedQueryOptions.Expand) as IQueryable<CompanyDto>;
+        return Ok(query);
+    }
 
-        var results = dbQuery?.ToList();
-
-        if (options.SelectExpand != null)
-        {
-            var projectedResults = options.SelectExpand.ApplyTo(results?.AsQueryable(), new ODataQuerySettings());
-            return Ok(projectedResults);
-        }
-
-        return Ok(results);
-   }
-
-    // GET: api/company/{id}
+    // GET: api/smartplugsensor/{id}
     [HttpGet("{id}")]
-    public async Task<ActionResult<CompanyDto>> GetById(string id)
+    public async Task<ActionResult<SmartPlugSensorDto>> GetById(string id)
     {
         try
         {
-            var company = await _companyAppService.GetByIdAsync(id);
-            return Ok(company);
+            // El servicio ya devuelve el DTO armado y con la compañía expandida
+            var sensor = await _sensorAppService.GetByIdAsync(id);
+
+            return Ok(sensor);
         }
         catch (KeyNotFoundException ex)
         {
@@ -52,13 +52,13 @@ public class CompanyController(ICompanyService companyAppService) : ControllerBa
         }
     }
 
-    // POST: api/company
+    // POST: api/smartplugsensor
     [HttpPost]
-    public async Task<ActionResult> Create([FromBody] CompanyCreateDto dto)
+    public async Task<ActionResult> Create([FromBody] SmartPlugSensorCreateDto dto)
     {
         try
         {
-            var newId = await _companyAppService.CreateCompanyAsync(dto);
+            var newId = await _sensorAppService.CreateSensorAsync(dto);
             return CreatedAtAction(nameof(GetById), new { id = newId }, new { Id = newId });
         }
         catch (UnauthorizedAccessException ex)
@@ -75,13 +75,13 @@ public class CompanyController(ICompanyService companyAppService) : ControllerBa
         }
     }
 
-    // PUT: api/company/{id}
+    // PUT: api/smartplugsensor/{id}
     [HttpPut("{id}")]
-    public async Task<ActionResult> Update(string id, [FromBody] CompanyUpdateDto dto)
+    public async Task<ActionResult> Update(string id, [FromBody] SmartPlugSensorUpdateDto dto)
     {
         try
         {
-            await _companyAppService.UpdateCompanyAsync(id, dto);
+            await _sensorAppService.UpdateSensorAsync(id, dto);
             return NoContent();
         }
         catch (KeyNotFoundException ex)
@@ -106,13 +106,13 @@ public class CompanyController(ICompanyService companyAppService) : ControllerBa
         }
     }
 
-    // DELETE: api/company/{id}
+    // DELETE: api/smartplugsensor/{id}
     [HttpDelete("{id}")]
     public async Task<ActionResult> Delete(string id)
     {
         try
         {
-            await _companyAppService.DeleteCompanyAsync(id);
+            await _sensorAppService.DeleteSensorAsync(id);
             return NoContent();
         }
         catch (UnauthorizedAccessException ex)
@@ -130,7 +130,6 @@ public class CompanyController(ICompanyService companyAppService) : ControllerBa
     /// </summary>
     private ActionResult MapValidationException(ValidationException ex)
     {
-        // Agrupa los errores por nombre de propiedad (ej: "Name" -> ["El nombre es requerido", "Debe tener al menos 3 letras"])
         var errorDictionary = ex.Errors
             .GroupBy(e => e.PropertyName)
             .ToDictionary(
