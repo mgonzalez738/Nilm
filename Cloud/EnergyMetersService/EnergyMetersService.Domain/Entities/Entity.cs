@@ -2,6 +2,6 @@
 {
     public abstract class Entity
     {
-        public required string Id { get; set; }
+        public string Id { get; set; } = string.Empty;
     }
 }

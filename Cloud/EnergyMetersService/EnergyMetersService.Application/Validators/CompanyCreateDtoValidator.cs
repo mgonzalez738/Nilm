@@ -1,15 +1,14 @@
 ﻿using FluentValidation;
 using EnergyMetersService.Application.DTOs;
-using EnergyMetersService.Domain.Entities;
 using EnergyMetersService.Domain.Interfaces;
 
 namespace EnergyMetersService.Application.Validators;
 
 public class CompanyCreateDtoValidator : AbstractValidator<CompanyCreateDto>
 {
-    private readonly IEntityRepository<Company> _companyRepository;
+    private readonly ICompanyRepository _companyRepository;
 
-    public CompanyCreateDtoValidator(IEntityRepository<Company> companyRepository)
+    public CompanyCreateDtoValidator(ICompanyRepository companyRepository)
     {
         _companyRepository = companyRepository;
 
@@ -23,7 +22,7 @@ public class CompanyCreateDtoValidator : AbstractValidator<CompanyCreateDto>
     {
         if (string.IsNullOrWhiteSpace(name)) return true;
 
-        var exists = await _companyRepository.ExistsAsync(c => c.Name == name);
+        var exists = await _companyRepository.ExistsByNameAsync(name);
         return !exists;
     }
 }

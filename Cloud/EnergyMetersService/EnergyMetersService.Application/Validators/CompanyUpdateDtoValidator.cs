@@ -1,15 +1,14 @@
 ﻿using FluentValidation;
 using EnergyMetersService.Application.DTOs;
-using EnergyMetersService.Domain.Entities;
 using EnergyMetersService.Domain.Interfaces;
 
 namespace EnergyMetersService.Application.Validators;
 
 public class CompanyUpdateDtoValidator : AbstractValidator<CompanyUpdateDto>
 {
-    private readonly IEntityRepository<Company> _companyRepository;
+    private readonly ICompanyRepository _companyRepository;
 
-    public CompanyUpdateDtoValidator(IEntityRepository<Company> companyRepository)
+    public CompanyUpdateDtoValidator(ICompanyRepository companyRepository)
     {
         _companyRepository = companyRepository;
 
@@ -28,7 +27,7 @@ public class CompanyUpdateDtoValidator : AbstractValidator<CompanyUpdateDto>
             throw new InvalidOperationException("El CompanyId no fue inyectado en el contexto de validación.");
         }
 
-        var exists = await _companyRepository.ExistsAsync(c => c.Name == name && c.Id != companyId);
+        var exists = await _companyRepository.ExistsByNameAsync(name, companyId);
 
         return !exists;
     }

@@ -1,0 +1,144 @@
+substitutions:
+  device_id: "002"
+  device_ip: "192.168.80.62"
+  device_gateway: "192.168.80.1"
+  device_subnet: "255.255.255.0"
+  device_dns1: "8.8.8.8"
+
+  wifi_ssid: "GYM2"
+  wifi_password: "xxx"
+  use_address: "192.168.80.62"
+
+  mqtt_broker: "192.168.80.50"
+  mqtt_port: "1883"
+
+  name: "smart-plug-${device_id}"
+  friendly_name: "Smart Plug Personal Computer"
+  relay_restore_mode: ALWAYS_ON
+  sensor_update_interval: 1s
+  current_limit : "10"
+  log_level: "INFO"
+  power_plug_type: "power-socket-eu"
+
+esphome:
+  name: "${name}"
+  friendly_name: "${friendly_name}"
+  name_add_mac_suffix: false
+  min_version: 2025.7.0
+  platformio_options:
+    board_build.mcu: esp32c3
+    board_build.variant: esp32c3
+    board_build.flash_mode: dio
+
+esp32:
+  board: esp32-c3-devkitm-1
+  flash_size: 4MB
+  variant: ESP32C3
+  framework:
+    type: esp-idf
+    version: recommended
+    sdkconfig_options:
+      CONFIG_ESP_TASK_WDT_TIMEOUT_S: "10"
+
+api:
+ota:
+  - platform: esphome
+logger:
+  baud_rate: 0
+  level: ${log_level}
+mdns:
+  disabled: false
+
+wifi:
+  ssid: "${wifi_ssid}"
+  password: "${wifi_password}"
+  use_address: "${use_address}"
+  manual_ip:
+    static_ip: ${device_ip}
+    gateway: ${device_gateway}
+    subnet: ${device_subnet}
+    dns1: ${device_dns1}
+
+uart:
+  rx_pin: GPIO20
+  baud_rate: 4800
+  data_bits: 8
+  stop_bits: 1
+  parity: EVEN
+
+switch:
+  - platform: gpio
+    name: "Switch"
+    pin: GPIO5
+    id: relay
+    restore_mode: ${relay_restore_mode}
+    icon: mdi:${power_plug_type}
+
+sensor:
+  - platform: cse7766
+    id: athom_cse7766
+    current:
+      name: "Current"
+      internal: true
+      id: current_sensor
+      filters:
+        - lambda: if (x < 0.060) return 0.0; else return x;
+      on_value_range:
+        - above: ${current_limit}
+          then:
+            - switch.turn_off: relay
+    voltage:
+      name: "Voltage"
+      internal: true
+      id: voltage_sensor
+    power:
+      name: "Power"
+      internal: true
+      id: power_sensor
+      filters:
+        - lambda: if (id(current_sensor).state == 0.0) return 0.0; else return x;
+        - lambda: if (x < 3.0) return 0.0; else return x;
+    reactive_power:
+      name: "Reactive Power"
+      internal: true
+      id: reactive_power_sensor
+
+time:
+  - platform: sntp
+    id: sntp_time
+    timezone: "UTC0"
+    update_interval: 6h
+    servers:
+      - "0.pool.ntp.org"
+      - "1.pool.ntp.org"
+
+mqtt:
+  id: mqtt_client
+  broker: "${mqtt_broker}"
+  port: ${mqtt_port}
+  topic_prefix: "smart-plug/${device_id}"
+  discovery: false
+
+interval:
+  - interval: 1s
+    then:
+      - lambda: |-
+          if (!id(sntp_time).now().is_valid() || !id(mqtt_client).is_connected()) {
+            return;
+          }
+
+          auto time = id(sntp_time).now();
+          std::string timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ");
+
+          float v = id(voltage_sensor).has_state() ? id(voltage_sensor).state : 0.0;
+          float c = id(current_sensor).has_state() ? id(current_sensor).state : 0.0;
+          float p = id(power_sensor).has_state() ? id(power_sensor).state : 0.0;
+          float q = id(reactive_power_sensor).has_state() ? id(reactive_power_sensor).state : 0.0;
+
+          int status = (p > 0.0) ? 1 : 0;
+
+          char json_buffer[300];
+          sprintf(json_buffer, "{\"timestamp\":\"%s\",\"voltage\":%.1f,\"current\":%.3f,\"activePower\":%.1f,\"reactivePower\":%.1f,\"status\":[%d]}",
+                  timestamp.c_str(), v, c, p, q, status);
+
+          id(mqtt_client).publish("smart-plug/${device_id}/data", json_buffer); 

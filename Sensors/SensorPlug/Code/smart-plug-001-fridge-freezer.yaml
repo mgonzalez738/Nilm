@@ -6,19 +6,24 @@ substitutions:
   device_dns1: "8.8.8.8"
 
   wifi_ssid: "GYM2"
-  wifi_password: "xxxxxxxx"
+  wifi_password: "xxx"
   use_address: "192.168.80.61"
 
   mqtt_broker: "192.168.80.50"
   mqtt_port: "1883"
-  
+
   name: "smart-plug-${device_id}"
-  friendly_name: "Smart Plug ${device_id}"
+  friendly_name: "Smart Plug Fridge/Freezer"
   relay_restore_mode: ALWAYS_ON
   sensor_update_interval: 1s
   current_limit : "10"
   log_level: "INFO"
-  power_plug_type: "power-socket-eu" 
+  power_plug_type: "power-socket-eu"
+
+  # Límites de Potencia Reactiva (VAr) para la máquina de estados
+  limit_1: "10.0"
+  limit_2: "30.0"
+  limit_3: "60.0"
 
 esphome:
   name: "${name}"
@@ -40,12 +45,11 @@ esp32:
     sdkconfig_options:
       CONFIG_ESP_TASK_WDT_TIMEOUT_S: "10"
 
-# Omitimos web_server, preferences y captive portal para máxima ligereza
 api:
 ota:
   - platform: esphome
 logger:
-  baud_rate: 0 
+  baud_rate: 0
   level: ${log_level}
 mdns:
   disabled: false
@@ -75,7 +79,6 @@ switch:
     restore_mode: ${relay_restore_mode}
     icon: mdi:${power_plug_type}
 
-# El sensor se restringe exclusivamente a valores instantáneos requeridos
 sensor:
   - platform: cse7766
     id: athom_cse7766
@@ -84,7 +87,7 @@ sensor:
       internal: true
       id: current_sensor
       filters:
-        - lambda: if (x < 0.060) return 0.0; else return x; 
+        - lambda: if (x < 0.060) return 0.0; else return x;
       on_value_range:
         - above: ${current_limit}
           then:
@@ -98,15 +101,19 @@ sensor:
       internal: true
       id: power_sensor
       filters:
-        - lambda: if (id(current_sensor).state == 0.0) return 0.0; else return x; 
-        - lambda: if (x < 3.0) return 0.0; else return x; 
+        - lambda: if (id(current_sensor).state == 0.0) return 0.0; else return x;
+        - lambda: if (x < 3.0) return 0.0; else return x;
+    reactive_power:
+      name: "Reactive Power"
+      internal: true
+      id: reactive_power_sensor
 
 time:
   - platform: sntp
     id: sntp_time
     timezone: "UTC0"
     update_interval: 6h
-    servers: 
+    servers:
       - "0.pool.ntp.org"
       - "1.pool.ntp.org"
 
@@ -117,7 +124,6 @@ mqtt:
   topic_prefix: "smart-plug/${device_id}"
   discovery: false
 
-# El ciclo de publicación se independiza de la validación estricta de tiempo de ESPHome
 interval:
   - interval: 1s
     then:
@@ -132,11 +138,37 @@ interval:
           float v = id(voltage_sensor).has_state() ? id(voltage_sensor).state : 0.0;
           float c = id(current_sensor).has_state() ? id(current_sensor).state : 0.0;
           float p = id(power_sensor).has_state() ? id(power_sensor).state : 0.0;
+          float q = id(reactive_power_sensor).has_state() ? id(reactive_power_sensor).state : 0.0;
 
-          int status = (p > 0.0) ? 1 : 0;
+          // -------------------------------------------------------------------
+          // CÁLCULO DE ESTADOS (Status: [0] = fridge, [1] = freezer)
+          // -------------------------------------------------------------------
+          // Se evalúa la potencia reactiva (q) contra 3 límites parametrizados:
+          // - Debajo de limit_1 (<10 VAr):  Ambos dispositivos están apagados.
+          // - Entre limit_1 y limit_2:      Solo el freezer está prendido.
+          // - Entre limit_2 y limit_3:      Solo la heladera está prendida.
+          // - Por encima de limit_3:        Ambos dispositivos están prendidos.
+          // -------------------------------------------------------------------
 
-          char json_buffer[250];
-          sprintf(json_buffer, "{\"timestamp\":\"%s\",\"voltage\":%.1f,\"current\":%.3f,\"power\":%.1f,\"status\":%d}", 
-                  timestamp.c_str(), v, c, p, status);
+          int fridge = 0;
+          int freezer = 0;
 
-          id(mqtt_client).publish("smart-plug/${device_id}/data", json_buffer);
+          if (q < ${limit_1}) {
+            fridge = 0;
+            freezer = 0;
+          } else if (q < ${limit_2}) {
+            fridge = 0;
+            freezer = 1;
+          } else if (q < ${limit_3}) {
+            fridge = 1;
+            freezer = 0;
+          } else {
+            fridge = 1;
+            freezer = 1;
+          }
+
+          char json_buffer[300];
+          sprintf(json_buffer, "{\"timestamp\":\"%s\",\"voltage\":%.1f,\"current\":%.3f,\"activePower\":%.1f,\"reactivePower\":%.1f,\"status\":[%d,%d]}",
+                  timestamp.c_str(), v, c, p, q, fridge, freezer);
+
+          id(mqtt_client).publish("smart-plug/${device_id}/data", json_buffer); 

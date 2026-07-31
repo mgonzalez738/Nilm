@@ -6,45 +6,45 @@ using System.Linq.Expressions;
 
 namespace EnergyMetersService.Infraestructure.Data.Repositories
 {
-    public class MongoDbEntityRepository<TEntity>(MongoDbContext context)
+    public abstract class MongoDbEntityRepository<TEntity>(MongoDbContext context)
     : IEntityRepository<TEntity> where TEntity : Entity
     {
-        private readonly IMongoCollection<TEntity> _collection = context.GetCollection<TEntity>(typeof(TEntity).Name);
+        protected readonly IMongoCollection<TEntity> _collection = context.GetCollection<TEntity>(typeof(TEntity).Name);
 
-        public async Task<TEntity?> GetByIdAsync(string id)
+        public virtual async Task<TEntity?> GetByIdAsync(string id)
         {
             var filter = Builders<TEntity>.Filter.Eq(e => e.Id, id);
             return await _collection.Find(filter).FirstOrDefaultAsync();
         }
 
-        public IQueryable<TEntity> AsQueryable()
+        public virtual IQueryable<TEntity> AsQueryable()
         {
             return _collection.AsQueryable();
         }
 
-        public async Task AddAsync(TEntity entity)
+        public virtual async Task AddAsync(TEntity entity)
         {
             await _collection.InsertOneAsync(entity);
         }
 
-        public async Task UpdateAsync(TEntity entity)
+        public virtual async Task UpdateAsync(TEntity entity)
         {
             var filter = Builders<TEntity>.Filter.Eq(e => e.Id, entity.Id);
             await _collection.ReplaceOneAsync(filter, entity);
         }
 
-        public async Task DeleteAsync(string id)
+        public virtual async Task DeleteAsync(string id)
         {
             var filter = Builders<TEntity>.Filter.Eq(e => e.Id, id);
             await _collection.DeleteOneAsync(filter);
         }
 
-        public async Task DeleteManyAsync(Expression<Func<TEntity, bool>> predicate)
+        public virtual async Task DeleteManyAsync(Expression<Func<TEntity, bool>> predicate)
         {
             await _collection.DeleteManyAsync(predicate);
         }
 
-        public async Task<bool> ExistsAsync(Expression<Func<TEntity, bool>> predicate)
+        public virtual async Task<bool> ExistsAsync(Expression<Func<TEntity, bool>> predicate)
         {
             return await _collection.Find(predicate).AnyAsync();
         }

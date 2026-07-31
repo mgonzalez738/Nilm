@@ -4,6 +4,7 @@ using FluentValidation;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.OData.Query;
+using Microsoft.AspNetCore.OData.Results;
 using Microsoft.OData;
 
 namespace EnergyMetersService.Api.Controllers;
@@ -11,44 +12,45 @@ namespace EnergyMetersService.Api.Controllers;
 [ApiController]
 [Route("api/[controller]")]
 [Authorize(Policy = "RequireAccessRoles")]
-public class CompanyController(ICompanyService companyAppService) : ControllerBase
+public class ProjectController(IProjectService projectAppService) : ControllerBase
 {
-    private readonly ICompanyService _companyAppService = companyAppService;
+    private readonly IProjectService _projectAppService = projectAppService;
 
     [HttpGet]
-    public ActionResult GetAll(ODataQueryOptions<CompanyDto> options)
+    public ActionResult GetAll(ODataQueryOptions<ProjectDto> options)
     {
         try
         {
-            var query = _companyAppService.GetQueryable();
+            var query = _projectAppService.GetQueryable();
 
             long? totalCount = null;
-            if (options.Count != null && options.Count.Value)
+            if (options.Count?.Value == true)
             {
-                var queryForCount = options.Filter != null
-                    ? options.Filter.ApplyTo(query, new ODataQuerySettings()) as IQueryable<CompanyDto>
+                var countQuery = options.Filter != null
+                    ? options.Filter.ApplyTo(query, new ODataQuerySettings()) as IQueryable<ProjectDto>
                     : query;
 
-                totalCount = queryForCount?.Count();
+                totalCount = countQuery?.Count();
             }
 
-            var dbQuery = options.ApplyTo(query, AllowedQueryOptions.Select) as IQueryable<CompanyDto>;
+            var dbQuery = options.ApplyTo(query, AllowedQueryOptions.Select | AllowedQueryOptions.Expand) as IQueryable<ProjectDto>;
+
 
             var results = dbQuery?.ToList() ?? [];
 
-            object finalResults = results;
+            IQueryable finalResults = results.AsQueryable();
             if (options.SelectExpand != null)
             {
-                finalResults = options.SelectExpand.ApplyTo(results?.AsQueryable(), new ODataQuerySettings());
+                finalResults = options.SelectExpand.ApplyTo(finalResults, new ODataQuerySettings());
             }
 
             if (totalCount.HasValue)
             {
-                return Ok(new Dictionary<string, object>
-                {
-                    { "@odata.count", totalCount },
-                    { "value", finalResults }
-                });
+                return Ok(new PageResult<object>(
+                    finalResults.Cast<object>(),
+                    null,
+                    totalCount
+                ));
             }
 
             return Ok(finalResults);
@@ -63,14 +65,13 @@ public class CompanyController(ICompanyService companyAppService) : ControllerBa
         }
     }
 
-    // GET: api/company/{id}
     [HttpGet("{id}")]
-    public async Task<ActionResult<CompanyDto>> GetById(string id)
+    public async Task<ActionResult<ProjectDto>> GetById(string id)
     {
         try
         {
-            var company = await _companyAppService.GetByIdAsync(id);
-            return Ok(company);
+            var project = await _projectAppService.GetByIdAsync(id);
+            return Ok(project);
         }
         catch (KeyNotFoundException ex)
         {
@@ -82,13 +83,12 @@ public class CompanyController(ICompanyService companyAppService) : ControllerBa
         }
     }
 
-    // POST: api/company
     [HttpPost]
-    public async Task<ActionResult> Create([FromBody] CompanyCreateDto dto)
+    public async Task<ActionResult> Create([FromBody] ProjectCreateDto dto)
     {
         try
         {
-            var newId = await _companyAppService.CreateCompanyAsync(dto);
+            var newId = await _projectAppService.CreateAsync(dto);
             return CreatedAtAction(nameof(GetById), new { id = newId }, new { Id = newId });
         }
         catch (UnauthorizedAccessException ex)
@@ -105,13 +105,12 @@ public class CompanyController(ICompanyService companyAppService) : ControllerBa
         }
     }
 
-    // PUT: api/company/{id}
     [HttpPut("{id}")]
-    public async Task<ActionResult> Update(string id, [FromBody] CompanyUpdateDto dto)
+    public async Task<ActionResult> Update(string id, [FromBody] ProjectUpdateDto dto)
     {
         try
         {
-            await _companyAppService.UpdateCompanyAsync(id, dto);
+            await _projectAppService.UpdateAsync(id, dto);
             return NoContent();
         }
         catch (KeyNotFoundException ex)
@@ -136,13 +135,12 @@ public class CompanyController(ICompanyService companyAppService) : ControllerBa
         }
     }
 
-    // DELETE: api/company/{id}
     [HttpDelete("{id}")]
     public async Task<ActionResult> Delete(string id)
     {
         try
         {
-            await _companyAppService.DeleteCompanyAsync(id);
+            await _projectAppService.DeleteAsync(id);
             return NoContent();
         }
         catch (UnauthorizedAccessException ex)
@@ -160,7 +158,6 @@ public class CompanyController(ICompanyService companyAppService) : ControllerBa
     /// </summary>
     private ActionResult MapValidationException(ValidationException ex)
     {
-        // Agrupa los errores por nombre de propiedad (ej: "Name" -> ["El nombre es requerido", "Debe tener al menos 3 letras"])
         var errorDictionary = ex.Errors
             .GroupBy(e => e.PropertyName)
             .ToDictionary(

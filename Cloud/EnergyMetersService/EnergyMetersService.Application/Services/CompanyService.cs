@@ -5,7 +5,8 @@ using EnergyMetersService.Application.DTOs;
 using EnergyMetersService.Application.Interfaces;
 using EnergyMetersService.Domain.Entities;
 using EnergyMetersService.Domain.Interfaces;
-using System.Linq; // Necesario para .Contains() y .Any()
+using System.Linq;
+using Mapster;
 
 namespace EnergyMetersService.Application.Services;
 
@@ -13,17 +14,17 @@ namespace EnergyMetersService.Application.Services;
 /// Provides application-level services for managing company entities.
 /// Handles business logic, validation, security filtering, and data persistence for companies.
 /// </summary>
-public partial class CompanyService(
+public class CompanyService(
     IUserContext userContext,
-    IEntityRepository<Company> companyRepository,
-    IEntityRepository<SmartPlugSensor> sensorRepository,
+    ICompanyRepository companyRepository,
+    //IEntityRepository<SmartPlugSensor> sensorRepository,
     IValidator<CompanyCreateDto> createValidator,
     IValidator<CompanyUpdateDto> updateValidator,
     ILogger<CompanyService> logger) : ICompanyService
 {
     private readonly IUserContext _userContext = userContext;
-    private readonly IEntityRepository<Company> _companyRepository = companyRepository;
-    private readonly IEntityRepository<SmartPlugSensor> _sensorRepository = sensorRepository;
+    private readonly ICompanyRepository _companyRepository = companyRepository;
+    //private readonly IEntityRepository<SmartPlugSensor> _sensorRepository = sensorRepository;
     private readonly IValidator<CompanyCreateDto> _createValidator = createValidator;
     private readonly IValidator<CompanyUpdateDto> _updateValidator = updateValidator;
     private readonly ILogger<CompanyService> _logger = logger;
@@ -32,27 +33,14 @@ public partial class CompanyService(
     /// Retrieves a company by its unique identifier.
     /// Evaluates the user's roles to ensure adequate access rights before returning the data.
     /// </summary>
-    public async Task<CompanyDto> GetByIdAsync(string id)
+    public async Task<CompanyDto?> GetByIdAsync(string id)
     {
-        LogFetchingCompany(id);
-
         var company = await _companyRepository.GetByIdAsync(id);
 
-        // Se actualiza la validación para buscar dentro de la colección de roles
-        if (company == null ||
-           (!_userContext.Roles.Contains(AppRoles.Super) && !_userContext.IsSystem && _userContext.CompanyId != company.Id))
-        {
-            LogCompanyGetFailed(id);
-            throw new KeyNotFoundException($"Company with ID {id} was not found.");
-        }
+        if(!_userContext.Roles.Contains(AppRoles.Super) && !_userContext.IsSystem && _userContext.CompanyId != company?.Id)
+            company = null;
 
-        LogCompanyRetrieved(id);
-
-        return new CompanyDto
-        {
-            Id = company.Id,
-            Name = company.Name
-        };
+        return company.Adapt<CompanyDto>();
     }
 
     /// <summary>
@@ -61,29 +49,18 @@ public partial class CompanyService(
     /// </summary>
     public IQueryable<CompanyDto> GetQueryable()
     {
-        // Se unen los roles en un string para el log
-        var userRolesStr = string.Join(", ", _userContext.Roles);
-        LogBuildingQueryable(userRolesStr);
-
         var query = _companyRepository.AsQueryable();
 
         if (!_userContext.Roles.Contains(AppRoles.Super) && !_userContext.IsSystem)
         {
             if (string.IsNullOrEmpty(_userContext.CompanyId))
             {
-                LogMissingCompanyId(userRolesStr);
                 return Array.Empty<CompanyDto>().AsQueryable();
             }
-
-            LogApplyingSecurityFilter(_userContext.CompanyId);
             query = query.Where(company => company.Id == _userContext.CompanyId);
         }
 
-        return query.Select(company => new CompanyDto
-        {
-            Id = company.Id,
-            Name = company.Name
-        });
+        return query.ProjectToType<CompanyDto>();
     }
 
     /// <summary>
@@ -91,29 +68,20 @@ public partial class CompanyService(
     /// </summary>
     public async Task<string> CreateCompanyAsync(CompanyCreateDto dto)
     {
-        LogStartingCompanyCreation(dto.Name);
-
         if (!_userContext.Roles.Contains(AppRoles.Super) && !_userContext.IsSystem)
         {
-            LogUnauthorizedCreateAttempt();
             throw new UnauthorizedAccessException("Super or System privileges are required for this operation.");
         }
 
         var validationResult = await _createValidator.ValidateAsync(dto);
         if (!validationResult.IsValid)
         {
-            LogCreateValidationFailed(dto.Name, validationResult.Errors);
             throw new ValidationException(validationResult.Errors);
         }
 
-        var company = new Company
-        {
-            Name = dto.Name
-        };
-
+        var company = dto.Adapt<Company>();
+        
         await _companyRepository.AddAsync(company);
-
-        LogCompanyCreated(company.Id);
 
         return company.Id;
     }
@@ -123,11 +91,8 @@ public partial class CompanyService(
     /// </summary>
     public async Task UpdateCompanyAsync(string id, CompanyUpdateDto dto)
     {
-        LogStartingCompanyUpdate(id);
-
         if (!_userContext.Roles.Contains(AppRoles.Super) && !_userContext.IsSystem)
         {
-            LogUnauthorizedUpdateAttempt(id);
             throw new UnauthorizedAccessException($"{AppRoles.Super} or System privileges are required for this operation.");
         }
 
@@ -137,7 +102,6 @@ public partial class CompanyService(
         var validationResult = await _updateValidator.ValidateAsync(context);
         if (!validationResult.IsValid)
         {
-            LogUpdateValidationFailed(id, validationResult.Errors);
             throw new ValidationException(validationResult.Errors);
         }
 
@@ -145,15 +109,12 @@ public partial class CompanyService(
 
         if (company == null)
         {
-            LogCompanyUpdateFailedNotFound(id);
             throw new KeyNotFoundException($"Company with ID {id} was not found.");
         }
 
-        company.Name = dto.Name;
+        dto.Adapt(company);
 
         await _companyRepository.UpdateAsync(company);
-
-        LogCompanyUpdated(id);
     }
 
     /// <summary>
@@ -161,78 +122,13 @@ public partial class CompanyService(
     /// </summary>
     public async Task DeleteCompanyAsync(string id)
     {
-        LogStartingCompanyDeletion(id);
-
         if (!_userContext.Roles.Contains(AppRoles.Super) && !_userContext.IsSystem)
         {
-            LogUnauthorizedDeleteAttempt(id);
             throw new UnauthorizedAccessException($"{AppRoles.Super} or System privileges are required for this operation.");
         }
 
-        LogDeletingAssociatedSensors(id);
-        await _sensorRepository.DeleteManyAsync(s => s.CompanyId == id);
+        //await _sensorRepository.DeleteManyAsync(s => s.CompanyId == id);
 
         await _companyRepository.DeleteAsync(id);
-
-        LogCompanyDeleted(id);
     }
-
-    // Partial Log methods
-
-    [LoggerMessage(Level = LogLevel.Debug, Message = "Fetching company with ID: {CompanyId}")]
-    private partial void LogFetchingCompany(string companyId);
-
-    [LoggerMessage(Level = LogLevel.Error, Message = "Failed to get company. Company with ID {CompanyId} was not found or permissions are insufficient.")]
-    private partial void LogCompanyGetFailed(string companyId);
-
-    [LoggerMessage(Level = LogLevel.Information, Message = "Company {CompanyId} successfully retrieved.")]
-    private partial void LogCompanyRetrieved(string companyId);
-
-    [LoggerMessage(Level = LogLevel.Debug, Message = "Building queryable for companies. Current roles: {UserRoles}")]
-    private partial void LogBuildingQueryable(string userRoles);
-
-    [LoggerMessage(Level = LogLevel.Debug, Message = "Applying security filter for company ID: {CompanyId}")]
-    private partial void LogApplyingSecurityFilter(string companyId);
-
-    [LoggerMessage(Level = LogLevel.Debug, Message = "Starting creation of new company with name: {CompanyName}")]
-    private partial void LogStartingCompanyCreation(string companyName);
-
-    [LoggerMessage(Level = LogLevel.Warning, Message = "Unauthorized attempt to create a company by a user without Super/System privileges.")]
-    private partial void LogUnauthorizedCreateAttempt();
-
-    [LoggerMessage(Level = LogLevel.Warning, Message = "Validation failed when attempting to create company {CompanyName}. Errors: {@ValidationErrors}")]
-    private partial void LogCreateValidationFailed(string companyName, object validationErrors);
-
-    [LoggerMessage(Level = LogLevel.Information, Message = "Company successfully created with ID: {CompanyId}")]
-    private partial void LogCompanyCreated(string companyId);
-
-    [LoggerMessage(Level = LogLevel.Debug, Message = "Starting update for company with ID: {CompanyId}")]
-    private partial void LogStartingCompanyUpdate(string companyId);
-
-    [LoggerMessage(Level = LogLevel.Warning, Message = "Unauthorized attempt to update company {CompanyId}.")]
-    private partial void LogUnauthorizedUpdateAttempt(string companyId);
-
-    [LoggerMessage(Level = LogLevel.Warning, Message = "Validation failed when updating company {CompanyId}. Errors: {@ValidationErrors}")]
-    private partial void LogUpdateValidationFailed(string companyId, object validationErrors);
-
-    [LoggerMessage(Level = LogLevel.Error, Message = "Update attempt failed. Company with ID {CompanyId} was not found.")]
-    private partial void LogCompanyUpdateFailedNotFound(string companyId);
-
-    [LoggerMessage(Level = LogLevel.Information, Message = "Company {CompanyId} successfully updated.")]
-    private partial void LogCompanyUpdated(string companyId);
-
-    [LoggerMessage(Level = LogLevel.Debug, Message = "Starting deletion of company with ID: {CompanyId}")]
-    private partial void LogStartingCompanyDeletion(string companyId);
-
-    [LoggerMessage(Level = LogLevel.Warning, Message = "Unauthorized attempt to delete company {CompanyId}.")]
-    private partial void LogUnauthorizedDeleteAttempt(string companyId);
-
-    [LoggerMessage(Level = LogLevel.Information, Message = "Deleting sensors associated with company {CompanyId}...")]
-    private partial void LogDeletingAssociatedSensors(string companyId);
-
-    [LoggerMessage(Level = LogLevel.Information, Message = "Company {CompanyId} and its associated sensors were successfully deleted.")]
-    private partial void LogCompanyDeleted(string companyId);
-
-    [LoggerMessage(Level = LogLevel.Warning, Message = "Queryable requested but user (Roles: {UserRoles}) has no CompanyId. Returning empty list.")]
-    private partial void LogMissingCompanyId(string userRoles);
 }

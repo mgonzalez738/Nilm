@@ -1,5 +1,7 @@
 using EnergyMetersService.Api.Authentication;
+using EnergyMetersService.Api.Filters;
 using EnergyMetersService.Api.Services;
+using EnergyMetersService.Application.Constants;
 using EnergyMetersService.Application.DTOs;
 using EnergyMetersService.Application.Interfaces;
 using EnergyMetersService.Application.Mappings;
@@ -18,6 +20,7 @@ using Microsoft.OData.ModelBuilder;
 using MongoDB.Bson.Serialization;
 using System.Reflection;
 using System.Text.Json.Serialization;
+using EnergyMetersService.Api.Extensions;
 
 namespace EnergyMetersService.Api
 {
@@ -29,54 +32,55 @@ namespace EnergyMetersService.Api
 
             // Add services to the container.
 
-            if (!BsonClassMap.IsClassMapRegistered(typeof(SmartPlugSensorDto)))
+            builder.Services.AddProblemDetails();
+
+            builder.Services.AddControllers(options =>
             {
-                BsonClassMap.RegisterClassMap<SmartPlugSensorDto>(cm =>
-                {
-                    cm.AutoMap(); // Le dice a Mongo que mapee las propiedades por nombre automáticamente
-                    cm.SetIgnoreExtraElements(true); // Evita errores si Mongo trae campos que el DTO no tiene
-                });
-            }
+                //options.Filters.Add<ODataProblemDetailsFilter>();
+            }).AddJsonOptions(options =>
+            {
+                options.JsonSerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
+            }).AddOData(options =>
+            {
+                options.Select()
+                       .Expand()
+                       .Filter()
+                       .OrderBy()
+                       .Count()
+                       .SetMaxTop(100);
+                var modelBuilder = new ODataConventionModelBuilder();
+                modelBuilder.EntitySet<CompanyDto>(nameof(Company));
+                modelBuilder.EntitySet<ProjectDto>(nameof(Project));
+                options.AddRouteComponents("api", modelBuilder.GetEdmModel());
+            });
 
             var config = TypeAdapterConfig.GlobalSettings;
+            config.Default.IgnoreNullValues(true);
             config.Scan(Assembly.GetAssembly(typeof(MappingConfig))!);
             builder.Services.AddSingleton(config);
             builder.Services.AddScoped<IMapper, ServiceMapper>();
 
-            builder.Services.AddControllers()
-                .AddJsonOptions(options =>
-                {
-                    options.JsonSerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
-                })
-                .AddOData(options =>
-                {
-                    options.Select()
-                            .Filter()
-                            .OrderBy()
-                            .SetMaxTop(100)
-                            .Count()
-                            .Expand();
-                    var modelBuilder = new ODataConventionModelBuilder();
-                    modelBuilder.EntitySet<CompanyDto>(nameof(Company));
-                    modelBuilder.EntitySet<SmartPlugSensorDto>(nameof(SmartPlugSensor));
-                    options.AddRouteComponents("api", modelBuilder.GetEdmModel());
-                });
-
             builder.Services.AddAuthentication("HeadersScheme")
                             .AddScheme<AuthenticationSchemeOptions, HeadersAuthHandler>("HeadersScheme", null);
+
+            builder.Services.AddAuthorizationBuilder()
+                            .AddPolicy("RequireAccessRoles", policy =>
+                                   policy.RequireRole(AppRoles.Super, AppRoles.Admin, AppRoles.User, AppRoles.Viewer)
+                            );
 
             builder.Services.AddHttpContextAccessor();
             builder.Services.AddScoped<IUserContext, ApiUserContext>();
 
             builder.Services.AddScoped<IValidator<CompanyCreateDto>, CompanyCreateDtoValidator>();
             builder.Services.AddScoped<IValidator<CompanyUpdateDto>, CompanyUpdateDtoValidator>();
-            builder.Services.AddScoped<IValidator<SmartPlugSensorCreateDto>, SmartPlugSensorCreateDtoValidator>();
-            builder.Services.AddScoped<IValidator<SmartPlugSensorUpdateDto>, SmartPlugSensorUpdateDtoValidator>();
+            builder.Services.AddScoped<IValidator<ProjectCreateDto>, ProjectCreateDtoValidator>();
+            builder.Services.AddScoped<IValidator<ProjectUpdateDto>, ProjectUpdateDtoValidator>();
 
             builder.Services.AddScoped<ICompanyService, CompanyService>();
-            builder.Services.AddScoped<ISmartPlugSensorService, SmartPlugSensorService>();
+            builder.Services.AddScoped<IProjectService, ProjectService>();
 
-            builder.Services.AddScoped(typeof(IEntityRepository<>), typeof(MongoDbEntityRepository<>));
+            builder.Services.AddScoped<ICompanyRepository, CompanyRepository>();
+            builder.Services.AddScoped<IProjectRepository, ProjectRepository>();
 
             builder.Services.Configure<MongoDbSettings>(builder.Configuration.GetSection("MongoDbSettings"));
             builder.Services.AddSingleton<MongoDbContext>();
@@ -84,6 +88,10 @@ namespace EnergyMetersService.Api
             var app = builder.Build();
 
             // Configure the HTTP request pipeline.
+
+            app.UseGlobalExceptionHandler();
+
+            app.UseStatusCodePages();
 
             app.UseAuthentication();
             app.UseAuthorization();
